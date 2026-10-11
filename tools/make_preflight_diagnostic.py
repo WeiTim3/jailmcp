@@ -9,8 +9,10 @@ installation, no deletion and never read a token.
 import re
 from pathlib import Path
 
-PACKAGE = Path('/var/minis/workspace/OpenMinis-Jailbreak-clean')
-WORKSPACE = Path('/var/minis/workspace')
+PACKAGE = Path(__file__).resolve().parent
+if not (PACKAGE / 'package_lifecycle.py').is_file():
+    PACKAGE = Path('/var/minis/workspace/OpenMinis-Jailbreak-clean')
+WORKSPACE = PACKAGE
 VERSION = re.search(r"^VERSION = '([^']+)'", (PACKAGE / 'package_lifecycle.py').read_text(), re.M).group(1)
 source = (PACKAGE / 'package_lifecycle.py').read_text().split("if __name__ == '__main__':")[0]
 source += '\nREMOVAL = ' + repr((PACKAGE / 'removal_helper.py').read_text()) + '\n'

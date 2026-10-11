@@ -4,3 +4,6 @@ test_fixtures/
 *.tmp
 .bridge-state/
 token
+OpenMinis-Jailbreak_*.deb
+SHA256SUMS
+*.tar.gz
