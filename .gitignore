@@ -1,9 +1,8 @@
 __pycache__/
 *.pyc
-test_fixtures/
 *.tmp
 .bridge-state/
 token
 OpenMinis-Jailbreak_*.deb
-SHA256SUMS
-*.tar.gz
+OpenMinis-Jailbreak_*-source.tar.gz
+SHA256SUMS.ci
