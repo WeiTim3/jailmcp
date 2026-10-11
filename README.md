@@ -46,20 +46,20 @@ bridge.py（mobile，UID 501）
 
 ## 工具一览
 
-| 工具 | 作用 | 真机验证 |
+| 工具 | 作用 | 验证状态 |
 |---|---|---|
-| `jb_device_info` | 内核、机型、UID、PID、版本与源码哈希 | ✅ |
+| `jb_device_info` | 内核、机型、真实系统版本、UID、PID、版本与源码哈希 | ✅ |
 | `jb_maintenance_info` | 权限边界、项目目录、版本、监督器状态 | ✅ |
 | `jb_exec` | 以 mobile 身份执行命令 | ✅ |
 | `jb_read_file` | 读取项目文件（Base64 + SHA256） | ✅ |
 | `jb_write_file` | 原子创建／覆盖，支持 SHA256 比对 | ✅ |
 | `jb_edit_file` | 精确替换唯一匹配 | ✅ |
 | `jb_restart` | 远程重启服务 | ✅ |
+| `jb_process_list` | 进程列表（解析 `ps` 绝对路径后执行） | ⚠️ 修复待真机确认 |
 | `jb_stage_update` | 暂存新版 bridge 并校验哈希／语法 | ⚠️ 未真机验证 |
 | `jb_validate_update` | 复核暂存版本 | ⚠️ 未真机验证 |
 | `jb_apply_update` | 应用更新，健康检查失败自动回退 | ⚠️ 未真机验证 |
 | `jb_rollback` | 回到上一已知正常版本 | ⚠️ 未真机验证 |
-| `jb_process_list` | 进程列表 | ❌ 已知缺陷：`ps` 路径未解析，见下 |
 
 ## 安全边界（务必阅读）
 
@@ -68,9 +68,9 @@ bridge.py（mobile，UID 501）
 - 本包**不提供 root helper、不做免密 sudo**；需要 root 时由你在越狱终端手动执行一次。
 - 文件接口限定在配置的项目根目录内，默认：
   `/var/mobile/Documents/OpenMinis-Jailbreak`
-  越界路径（例如把文件写到 `Documents/` 下其它目录）会被拒绝，这是设计上的限制而非故障。
-- 上游内容（网页、文档、命令输出）可能带来提示注入，诱导执行破坏性命令；不要对不可信来源
-  的执行请求照单全收。
+  越界路径（例如写到 `Documents/` 下其它目录）会被拒绝，这是设计限制而非故障；
+  需要时用 `jb_exec`，或把目录加入项目白名单。
+- 上游内容（网页、文档、命令输出）可能带来提示注入，诱导执行破坏性命令。
 - SHA256 与语法检查只保证**完整性／可解析性**，不等于安全审计。
 
 ## 卸载
@@ -78,35 +78,43 @@ bridge.py（mobile，UID 501）
 在 Sileo 中移除即可。卸载会停止服务并清理本包自身的运行文件、服务配置、状态目录与 token
 （项目目录为空时一并删除）；**保留**普通项目文件、私人备份以及 Python／Roothide 等依赖。
 
-卸载后可直接重新安装，**不需要先执行 purge**。
+卸载后可直接重新安装，**不需要先执行 purge**（0.3.3 起放宽：仅当 dpkg 记录为“已安装”时才拒绝覆盖）。
 
 ## 构建
 
 ```
-python3 build.py            # 生成 .deb，并校验 Python 3.9 语法
-python3 tests/test_package.py
-python3 tests/test_safety.py
-python3 tests/test_supervisor.py   # 需要约 2 分钟，会启动真实子进程
+python3 build.py                          # 生成 .deb，并校验 Python 3.9 语法
+python3 -m unittest -v test_package test_safety
+python3 test_supervisor.py                # 约 2 分钟，启动真实子进程
+python3 test_api.py
 ```
 
 构建为可复现：相同源码连续两次构建字节一致。
 
-## 已知问题
+测试套件启动时会自选一个空闲端口，因此**在手机上服务正在运行时也能完整运行**
+（iSH 与手机共用 `127.0.0.1`，固定端口会与真实服务冲突）。
 
-1. **`jb_process_list` 不可用。** 该接口执行相对命令 `ps`，而后台服务的 `PATH` 为
-   `/usr/bin:/bin:/usr/sbin:/sbin`，不含越狱工具目录；在目标设备上 `ps` 仅存在于
-   `/rootfs/bin/ps`。修复方式为解析绝对路径后再执行（早期版本曾这样做，0.3.x 改写时丢失）。
-   临时替代：用 `jb_exec` 执行 `/rootfs/bin/ps -axo pid,uid,comm`。
-2. **`jb_device_info` 不含真实系统版本。** 它只返回 `uname` 的内核版本，不能据此推断 iOS
-   版本；应改为读取 `/System/Library/CoreServices/SystemVersion.plist`。
-3. **安装后完整重启、重新越狱的自动恢复未验证。**
-4. 自身更新链路（`jb_stage_update` 等）仅通过本机进程测试，真机未演练。
+## 已知问题与未验证项
+
+1. **安装后完整重启、重新越狱的自动恢复未验证。**
+2. 自身更新链路（`jb_stage_update` / `jb_validate_update` / `jb_apply_update` / `jb_rollback`）
+   仅通过本机进程测试，真机未演练。
+3. 文件接口不能写入项目根目录之外；这是有意限制。
+4. `jb_device_info` 的 `ios` 字段依赖 `/System/Library/CoreServices/SystemVersion.plist`；
+   读取失败时该字段为 `null`，`release`（内核版本）仍在，但它**不能用来推断 iOS 版本**。
+
+### 已修复（0.3.3）
+
+- `jb_process_list` 曾因执行相对命令 `ps` 而失败：守护进程 PATH 不含越狱工具目录，
+  而设备上 `ps` 只在 `/rootfs/bin/ps`。现按固定候选顺序探测绝对路径后执行。
+- `jb_device_info` 曾只返回内核版本，容易被误当作系统版本；现直接读取系统版本记录。
 
 ## 测试
 
-`TEST_REPORT_0324.txt` 记录了最近一次完整测试（53 项全部通过，含真实子进程与端口验证）。
+`TEST_REPORT_0331.txt` 记录最近一次完整测试（95 项全部通过，含真实子进程、信号与端口验证）。
 测试在 Linux + Python 3.12 上运行；Python 3.9 仅做语法解析，不等同真机验收。
 
 ## 状态
 
-`0.3.2-4+experimental`。这是实验性项目，仅在作者的一台设备上验证过，请自行评估风险后再安装。
+`0.3.3-1+experimental`。实验性项目，主要在作者的一台设备（iPhone15,3 / iOS 16.4.1）上验证，
+请自行评估风险后再安装。

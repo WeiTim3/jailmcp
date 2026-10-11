@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import signal
 import socket
 import subprocess
@@ -282,7 +283,7 @@ class RealSupervisor(Fixture):
         return sha
     def test_real_upgrade_rollback_restart_bad_update(self):
         before=self.call('jb_device_info')
-        second=self.stage(self.original.replace(b"VERSION = '0.3.2'",b"VERSION = '0.3.1-test'"))
+        second=self.stage(re.sub(rb"VERSION = '[^']+'", b"VERSION = '0.3.1-test'", self.original, count=1))
         self.assertTrue(self.call('jb_apply_update',{'sha256':second})['queued'])
         upgraded=self.wait_healthy(second,before['pid']);self.assertEqual(upgraded['bridge'],'0.3.1-test')
         self.call('jb_rollback');rolled=self.wait_healthy(self.first,upgraded['pid'])

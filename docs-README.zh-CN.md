@@ -1,34 +1,50 @@
-# OpenMinis-Jailbreak 0.3.2-2+experimental
+# OpenMinis-Jailbreak 0.3.3-1+experimental
 
-## 本次窄修订
-修复 Roothide 系统 `/private/var`（以及固定 Documents 路径）映射被逐级 `O_NOFOLLOW` 误拒绝的问题。仅 UID501 助手的 Documents 锚点允许系统映射：分别打开固定 `/var/mobile/Documents` 与 `/private/var/mobile/Documents`，校验目录 UID501、设备号与 inode 一致。双别名一致不是对任意用户路径的信任；路径硬编码、不接受调用者输入。项目和 state 后代仍使用 dirfd + `O_NOFOLLOW`，链接仅可被 unlink 而不会递归到目标；root 收据与 plist 保护不放宽。运行时和 mobile_setup 的 canonical 路径逻辑不变。
+以 launchd 服务形式运行、并通过本机 MCP 向 OpenMinis 提供越狱侧能力的服务包。
+OpenMinis 本体不需要越狱权限、不需要注入。
 
-**安装前必须已 purge 旧包及 config-files 状态。** `preinst install <old-version>` 仍按 clean-install-only 拒绝；仅 remove 留下 rc/config-files 不够，本次不改升级策略。先以目标机 root Python 3.9 运行配套 `openminis-preflight-readonly-v032r2.py`；它只查询包状态、系统路径、服务及 UID501 fresh（含短暂 socket bind/listen），不读取 token、不创建文件、不安装或清理。失败仅打印固定阶段，不输出异常文本。PASS 只代表预检，不代表安装或服务验证。
+## 本版改动
 
-本包尚未在手机安装验证；不要据此宣称已可用。原 0.3.2-1 DEB 原样保留。
+1. **修复 `jb_process_list`**：原先执行相对命令 `ps`，而守护进程 PATH 为
+   `/usr/bin:/bin:/usr/sbin:/sbin`，不含越狱工具目录，目标设备上 `ps` 仅存在于
+   `/rootfs/bin/ps`。现按固定候选顺序（`/rootfs/bin/ps` → `/bin/ps` → `/usr/bin/ps`
+   → `/usr/local/bin/ps`）探测可执行文件，再用绝对路径执行；候选为常量，不接受调用者输入。
+2. **修复 `jb_device_info` 缺少真实系统版本**：原先只返回 `uname` 的内核版本，
+   不能用来推断 iOS 版本。现读取 `/System/Library/CoreServices/SystemVersion.plist`，
+   返回 `{"version": "16.4.1", "build": "20E252"}`；读取失败时为 `null`，不影响其余字段。
+3. **放宽重装限制**：`preinst` 不再因存在旧版本号参数就拒绝，而是只读查询 dpkg 状态——
+   仅当记录为“已安装”时拒绝覆盖；卸载后残留的 `config-files` 记录允许直接重新安装，
+   **不再要求手动 `dpkg --purge`**。拒绝前唯一的动作是一次只读状态查询。
 
-## 发布边界（重要）
-这是 **CLEAN-INSTALL ONLY（仅全新安装）** 版本，不是 0.3.0/0.3.1 的原地升级，也不执行自动迁移。`preinst` 在任何变更前拒绝 dpkg upgrade；请先卸载已验证的旧基线，并由用户自行私下备份需要的数据。旧版 migration-backup、下载、DEB、普通项目文件和 MCP 配置不会被本包自动删除。
-
-唯一项目目录是 `/var/mobile/Documents/OpenMinis-Jailbreak`；不会创建或接受 `openminis-jailbreak` 小写 alias。全新安装若发现大写目录、`.bridge-state`、小写目录/alias、同标签服务或其他运行时残留，将拒绝并保留现场。普通文件仅在用户明确完成旧版卸载后由其自行处理。
+两项修复均为只读逻辑，未改变权限模型，未新增 root 能力。
 
 ## 生命周期
-- `preinst install`：只做 root 同标签/运行时和 UID501 纯净状态预检；失败不修改。
-- `postinst configure`：UID501 创建 canonical 目录、私有 token/state 和固定 launchd 服务，并进行健康检查。
+
+- `preinst install`：root 与 UID501 预检；判断是否会覆盖已安装载荷；失败不修改任何文件。
+- `postinst configure`：UID501 创建 canonical 目录、私有 token/state 与固定 launchd 服务，并做健康检查。
 - `prerm remove`：只停止并验证本包同标签服务及其自有子进程；不删 token/state。
-- `postrm remove/purge`：依据 root 所有的 `.clean-install-v032` 凭据，只清理本包的 `.bridge-state`（包括 token、配置、版本、审计、锁和临时文件）；不删 canonical 内普通项目文件。缺失文件、重复执行和可选清理失败仅警告，不让脚本失效。无凭据保留数据。token/state 只在最终 remove/purge 路径处理；升级/中止路径绝不清理。清理成功后删除本包凭据与可验证 plist，运行时 payload 由 dpkg 删除。
+- `postrm remove/purge`：依据 root 所有的凭据，只清理本包的 `.bridge-state`
+  （token、配置、版本、审计、锁、临时文件）；保留 canonical 目录内的普通项目文件。
+  缺失文件、重复执行与可选清理失败仅警告，不让脚本失效。
 
-监督器信号处理只设置 STOP 标志，主循环轮询子进程；退出使用自有 `Popen` 句柄的有界 TERM/KILL，不读取 mobile PID 文件，也不 blanket-kill。移动端内容通过 UID501、目录 fd、`O_NOFOLLOW` 限定；root 不递归删除 mobile 控制路径。服务标签/路径不明确时停止或清理会拒绝。
+监督器信号处理只设置 STOP 标志；退出时对自有子进程组做有界 TERM/KILL；
+子进程另带父进程消失看门狗，即使监督器被强制结束也会立即退出并释放端口。
 
-## 构建与验证
-本目录工具离线构建，不连接手机、不执行 root 操作：
+## 安装
 
-```sh
-python3 build.py
-python3 -m unittest -v test_package test_safety
-python3 test_api.py
-python3 -m py_compile source-v030/*.py mobile_setup.py package_lifecycle.py removal_helper.py build.py
-sha256sum OpenMinis-Jailbreak_0.3.2-2+experimental_iphoneos-arm64e.deb
-```
+唯一项目目录为 `/var/mobile/Documents/OpenMinis-Jailbreak`，**不创建也不接受小写 alias**。
+若发现大写目录、小写 alias、同标签服务或其它运行时残留，将拒绝并保留现场。
 
-测试在本地 Python 3.12 上运行，并对全部源执行 Python 3.9 AST 语法门禁；目标机为 Python 3.9。需要真机/iOS Roothide、UID501、launchd、端口释放和真实信号生命周期验证，当前明确标为 experimental，不能把离线 mock 结果当真机验证。
+安装后 Token 位于 `/var/mobile/Documents/OpenMinis-Jailbreak/.bridge-state/token`（私密，勿分享）；
+OpenMinis 侧 MCP 服务器填 `http://127.0.0.1:18765/mcp`，请求头 `Authorization: Bearer <token>`。
+
+## 版本兼容
+
+本包为 **干净安装** 语义：拒绝覆盖 dpkg 记录为“已安装”的版本。
+从旧版本迁移前请先卸载并私下备份数据。安装包版本 `0.3.3-1+experimental`，
+移动端 bridge `0.3.3`，MCP API 版本仍为 `3`。
+
+## 未验证项
+
+安装、卸载、重启恢复与自身更新链路的真机验收尚未覆盖本版本；
+本机测试运行于 Python 3.12，Python 3.9 仅做语法解析。详见 `TEST_REPORT_0331.txt`。

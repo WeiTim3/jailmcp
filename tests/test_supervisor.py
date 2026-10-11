@@ -42,7 +42,19 @@ PRIVATE = Path('/private')
 PRIVATE_VAR = PRIVATE / 'var'
 BASE = DOCS / 'OpenMinis-Jailbreak'
 STATE = BASE / '.bridge-state'
-PORT = 18765
+
+def _free_port():
+    """Pick an unused loopback port.
+
+    iSH shares the device's 127.0.0.1 with the real OpenMinis-Jailbreak service, so a
+    hardcoded 18765 collides whenever the bridge is installed and listening; the
+    fixtures then cannot bind and every test fails for the wrong reason.
+    """
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        return probe.getsockname()[1]
+
+PORT = _free_port()
 BOUND = 8.0          # test-side patience; the supervisor's own shutdown bound is 3s
 STARTUP_BOUND = 35.0 # test-side patience for a cold Python child on this machine
 PACKAGED = ('launcher.py', 'maintenance_runtime.py', 'bridge.py', 'mobile_setup.py')
@@ -190,8 +202,17 @@ class SupervisorRealEnvironment(unittest.TestCase):
         os.chmod(STORE, 0o755)
         for name in PACKAGED:
             source = HERE / name if name == 'mobile_setup.py' else HERE / 'source-v030' / name
+            data = source.read_bytes()
+            if name == 'maintenance_runtime.py':
+                # Point the staged runtime at the fixture's free port; the packaged
+                # 18765 is occupied by the real service on this device (iSH shares
+                # the phone's loopback), which would stop the child from binding.
+                patched = data.replace(b'PORT = 18765', b'PORT = %d' % PORT)
+                if patched == data or b'PORT = %d' % PORT not in patched:
+                    raise AssertionError('could not repoint fixture runtime port')
+                data = patched
             target = STORE / name
-            target.write_bytes(source.read_bytes())
+            target.write_bytes(data)
             os.chmod(target, 0o644); os.chown(target, 0, 0)
         cls.bridge_sha = hashlib.sha256((HERE / 'source-v030' / 'bridge.py').read_bytes()).hexdigest()
         import shutil
@@ -201,6 +222,15 @@ class SupervisorRealEnvironment(unittest.TestCase):
         cls.removal_text = packaged_helper_text()
         if cls.removal_text != (HERE / 'removal_helper.py').read_text():
             raise AssertionError('packed helper text differs from source helper')
+        # This device shares its loopback with the real OpenMinis-Jailbreak service
+        # on 18765, so the fixture's helper must test the fixture's own port instead
+        # of the packaged default; otherwise every socket_free() check reports busy.
+        repointed = cls.removal_text.replace('PORT = 18765', 'PORT = %d' % PORT)
+        if repointed == cls.removal_text:
+            raise AssertionError('could not repoint fixture helper port')
+        cls.removal_text = repointed
+        cls.packaged_removal = lc.REMOVAL
+        lc.REMOVAL = repointed
         cls.token_seed = mobile_run([sys.executable, '-I', '-B', '-c',
             "import sys; sys.path.insert(0, %r); import mobile_setup; mobile_setup.setup()" % str(STORE)])
         if cls.token_seed.returncode:
@@ -209,6 +239,7 @@ class SupervisorRealEnvironment(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        lc.REMOVAL = cls.packaged_removal
         cls.quiet()
         if cls.created['store'] and STORE.exists():
             for name in PACKAGED:

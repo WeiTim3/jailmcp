@@ -11,11 +11,39 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 import maintenance_runtime as rt
 
-VERSION = '0.3.2'
+VERSION = '0.3.3'
 MAX_BODY = 200000
 SOURCE = os.environ.get('OPENMINIS_SOURCE_SHA256', '')
 SUPERVISED = os.environ.get('OPENMINIS_SUPERVISED') == '1'
 EXIT_REQUESTED = threading.Event()
+# The service runs with a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) that does not
+# include the jailbreak tool directory, so a bare 'ps' can fail to resolve. Probe the
+# fixed known locations instead: the first executable wins.
+PS_CANDIDATES = ('/rootfs/bin/ps', '/bin/ps', '/usr/bin/ps', '/usr/local/bin/ps')
+SYSTEM_VERSION_PLIST = '/System/Library/CoreServices/SystemVersion.plist'
+
+def ps_path():
+    for candidate in PS_CANDIDATES:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    raise ValueError('ps unavailable')
+
+def os_version():
+    """Marketing iOS version and build.
+
+    uname's Darwin release only identifies the kernel and cannot distinguish patch
+    releases, so read the system's own record instead of inferring a version.
+    """
+    try:
+        import plistlib
+        with open(SYSTEM_VERSION_PLIST, 'rb') as stream:
+            data = plistlib.load(stream)
+        version, build = data.get('ProductVersion'), data.get('ProductBuildVersion')
+        if isinstance(version, str) and version and isinstance(build, str) and build:
+            return {'version': version, 'build': build}
+    except Exception:
+        pass
+    return None
 
 def schema(properties=None, required=()):
     return {'type': 'object', 'properties': properties or {}, 'required': list(required), 'additionalProperties': False}
@@ -87,7 +115,7 @@ def invoke(name, args):
         if kind == 'integer' and type(value) is not int: raise ValueError('Type')
     if name == 'jb_device_info':
         u = os.uname()
-        return {'system': u.sysname, 'release': u.release, 'machine': u.machine,
+        return {'system': u.sysname, 'release': u.release, 'machine': u.machine, 'ios': os_version(),
                 'uid': os.getuid(), 'pid': os.getpid(), 'bridge': VERSION, 'source_sha256': SOURCE}
     if name == 'jb_maintenance_info':
         conf = rt.config()
@@ -100,10 +128,12 @@ def invoke(name, args):
                 'audit': '100 records; fixed tool names and status only; mobile-editable'}
     if name == 'jb_process_list':
         # Fixed command avoids argument exposure, same bounded execution machinery.
+        # ps_path() resolves the absolute binary; a bare 'ps' is not on the daemon PATH.
         project = next(iter(rt.config()['projects']))
-        result = rt.command("ps -axo pid,uid,comm", project, 4, 16384)
+        executable = ps_path()
+        result = rt.command(executable + ' -axo pid,uid,comm', project, 4, 16384)
         if result['exit_code'] != 0: raise ValueError('ps unavailable')
-        return {'lines': result['stdout'].splitlines()[:101], 'limit': 100}
+        return {'lines': result['stdout'].splitlines()[:101], 'limit': 100, 'executable': executable}
     if name == 'jb_exec':
         return rt.command(args['command'], args['project'], args.get('timeout', 15), args.get('output_limit', 16384))
     with rt.LOCK:

@@ -4,6 +4,7 @@ import ast
 import contextlib
 import fcntl
 import os
+import plistlib
 from pathlib import Path
 import signal
 import socket
@@ -27,6 +28,45 @@ def documents_fixture():
         os.chown(d, 501, -1)
         with patch.object(rm, 'DOCS', d), patch.object(rm, 'DOCS_ALIAS', d), patch.object(rm, 'identity'):
             yield d
+
+class FixedDefectRegressionTests(unittest.TestCase):
+    """Guards for the two defects reported from the device on 0.3.2-4."""
+
+    def test_ps_path_probes_fixed_locations(self):
+        with tempfile.TemporaryDirectory() as d:
+            good = Path(d) / 'ps'; good.write_text('#!/bin/sh\n'); good.chmod(0o755)
+            missing = Path(d) / 'missing' / 'ps'
+            with patch.object(bridge, 'PS_CANDIDATES', (str(missing), str(good))):
+                self.assertEqual(bridge.ps_path(), str(good))
+            with patch.object(bridge, 'PS_CANDIDATES', (str(missing),)):
+                with self.assertRaises(ValueError): bridge.ps_path()
+
+    def test_process_list_runs_resolved_absolute_ps(self):
+        # A bare 'ps' is not on the daemon PATH, which is what broke the tool.
+        with patch.object(bridge.rt, 'mobile'), \
+             patch.object(bridge.rt, 'config', return_value={'projects': {'main': '/tmp'}}), \
+             patch.object(bridge, 'ps_path', return_value='/rootfs/bin/ps'), \
+             patch.object(bridge.rt, 'command', return_value={'exit_code': 0, 'stdout': '  PID\n    1\n'}) as cmd:
+            out = bridge.invoke('jb_process_list', {})
+        self.assertEqual(cmd.call_args[0][0], '/rootfs/bin/ps -axo pid,uid,comm')
+        self.assertEqual(out['executable'], '/rootfs/bin/ps')
+        self.assertEqual(out['limit'], 100)
+
+    def test_os_version_reads_system_plist(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / 'SystemVersion.plist'
+            p.write_bytes(plistlib.dumps({'ProductName': 'iPhone OS', 'ProductVersion': '16.4.1',
+                                          'ProductBuildVersion': '20E252'}))
+            with patch.object(bridge, 'SYSTEM_VERSION_PLIST', str(p)):
+                self.assertEqual(bridge.os_version(), {'version': '16.4.1', 'build': '20E252'})
+            with patch.object(bridge, 'SYSTEM_VERSION_PLIST', str(Path(d) / 'absent')):
+                self.assertIsNone(bridge.os_version())
+
+    def test_device_info_exposes_ios_version(self):
+        with patch.object(bridge.rt, 'mobile'), \
+             patch.object(bridge, 'os_version', return_value={'version': '16.4.1', 'build': '20E252'}):
+            self.assertEqual(bridge.invoke('jb_device_info', {})['ios']['build'], '20E252')
+
 
 class SafetyTests(unittest.TestCase):
     def test_upgrade_rejected_before_any_operations(self):
