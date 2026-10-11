@@ -1,0 +1,91 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          python3 -V
+          dpkg-deb --version | head -1
+
+      - name: Build and verify reproducibility
+        run: |
+          python3 build.py
+          cp OpenMinis-Jailbreak_*.deb /tmp/first.deb
+          python3 build.py
+          cmp /tmp/first.deb OpenMinis-Jailbreak_*.deb
+          echo "reproducible: identical bytes"
+
+      - name: Source archive
+        run: |
+          V=$(python3 -c "import package_lifecycle as l; print(l.VERSION)")
+          tar czf "OpenMinis-Jailbreak_${V}-source.tar.gz" \
+            build.py package_lifecycle.py removal_helper.py mobile_setup.py \
+            README.md README.zh-CN.md TEST_REPORT_0331.txt \
+            test_package.py test_safety.py test_supervisor.py test_api.py run_baseline_api_tests.py \
+            source-v030
+          ls -l OpenMinis-Jailbreak_*.deb "OpenMinis-Jailbreak_${V}-source.tar.gz"
+
+      - name: Checksums
+        run: sha256sum OpenMinis-Jailbreak_*.deb "OpenMinis-Jailbreak_$(python3 -c 'import package_lifecycle as l; print(l.VERSION)')-source.tar.gz" | tee SHA256SUMS.ci
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openminis-jailbreak
+          path: |
+            OpenMinis-Jailbreak_*.deb
+            OpenMinis-Jailbreak_*-source.tar.gz
+            SHA256SUMS.ci
+
+      - name: Tests (unprivileged)
+        run: |
+          python3 test_package.py
+          python3 test_api.py
+
+      - name: Allow the UID501 fixture to run from the workspace
+        run: sudo chmod -R a+rX "$GITHUB_WORKSPACE"
+
+      - name: Tests (privileged)
+        run: |
+          rc=0
+          sudo -E python3 test_safety.py || rc=1
+          sudo -E python3 test_supervisor.py || rc=1
+          exit $rc
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          python3 build.py
+          V=$(python3 -c "import package_lifecycle as l; print(l.VERSION)")
+          tar czf "OpenMinis-Jailbreak_${V}-source.tar.gz" \
+            build.py package_lifecycle.py removal_helper.py mobile_setup.py \
+            README.md README.zh-CN.md TEST_REPORT_0331.txt \
+            test_package.py test_safety.py test_supervisor.py test_api.py run_baseline_api_tests.py \
+            source-v030
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --prerelease --title "$GITHUB_REF_NAME" --notes "Built from ${GITHUB_SHA}"
+          gh release upload "$GITHUB_REF_NAME" OpenMinis-Jailbreak_*.deb OpenMinis-Jailbreak_*-source.tar.gz --clobber
