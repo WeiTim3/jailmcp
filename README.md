@@ -39,14 +39,25 @@ token 位于设备上（私密数据，勿分享）：
 
 安装后无需重启；卸载后可直接重装，**不必 purge**。
 
-## 工具（25 个）
+## 工具（26 个）
 
 - **信息**：`jb_device_info`、`jb_process_list`、`jb_maintenance_info`、`jb_projects`
 - **文件**：`jb_read_file`、`jb_write_file`、`jb_edit_file`、`jb_list_dir`、`jb_stat`、
   `jb_mkdir`、`jb_delete`、`jb_rename`、`jb_search`、`jb_read_chunk`、`jb_write_chunk`
+- **真实文件系统**：`jb_find`（在 `/rootfs` 下按名字搜整机，只读、有界）
 - **上传**：`jb_upload_begin` / `jb_upload_chunk` / `jb_upload_commit` / `jb_upload_abort`（原子就位）
 - **执行**：`jb_exec`、`jb_restart`
 - **更新**：`jb_stage_update`、`jb_validate_update`、`jb_apply_update`、`jb_rollback`
+
+## 真实文件系统（roothide）
+
+在 roothide 设备上，**`/var` 是被重定向的**（指向 jailbreak 自己的那棵树），设备**真实**路径在 `/rootfs` 下：
+
+- 真实用户数据：`/rootfs/private/var/mobile/…`
+- `jb_find` 默认搜的就是这棵真实树（`/rootfs/private/var/mobile`），也可指定 `/rootfs` 下任意路径。
+
+文件类工具（`jb_read_file` 等）仍在项目根 `/var/mobile/Documents/OpenMinis-Jailbreak` 内工作；
+要读其它真实文件，用 `jb_find` 定位后配合 `jb_exec`（或直接用绝对路径）。
 
 ## 安全边界（务必阅读）
 

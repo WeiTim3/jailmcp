@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 import maintenance_runtime as rt
 
-VERSION = '0.3.6'
+VERSION = '0.3.7'
 # One full 262144-byte chunk is ~349528 base64 characters; the transport limit
 # must cover that plus the JSON envelope so jb_write_chunk can accept MAX_CHUNK.
 MAX_BODY = 400000
@@ -115,6 +115,12 @@ tool('jb_upload_commit', 'Verify the assembled upload (against expected_sha256 w
       'overwrite': BOOL}, ('upload_id', 'project', 'path'))
 tool('jb_upload_abort', 'Discard a staged upload and its idempotent opaque id; the id can never be reused afterwards and only the upload area is touched.',
      {'upload_id': STRING}, ('upload_id',))
+tool('jb_find', 'Read-only name search over the device filesystem under /rootfs - the real device tree (default /rootfs/private/var/mobile). Any path that resolves under /rootfs is accepted; / itself is refused. Bounded by wall clock, entry count and depth; symlinked directories are never entered; nothing can be written.',
+     {'path': STRING, 'name_pattern': STRING,
+      'limit': {'type': 'integer', 'minimum': 1, 'maximum': 1000},
+      'max_depth': {'type': 'integer', 'minimum': 0, 'maximum': 32},
+      'max_seconds': {'type': 'integer', 'minimum': 1, 'maximum': 30},
+      'min_bytes': {'type': 'integer', 'minimum': 0}}, ('name_pattern',))
 
 SPEC = {x['name']: x['inputSchema'] for x in TOOLS}
 
@@ -179,6 +185,11 @@ MAX_SEARCH_FILES = 100000
 MAX_SEARCH_BYTES = 16777216
 SEARCH_SECONDS = 10.0            # wall-clock bound, reported in the result
 EXCERPT = 200                    # bounded excerpt length
+REAL_ROOT = '/rootfs'            # jb_find: the real device tree (a jailbreak redirect owns /var)
+MAX_FIND_LIMIT = 1000            # jb_find match cap
+MAX_FIND_DEPTH = 32
+MAX_FIND_SECONDS = 30
+MAX_FIND_ENTRIES = 200000
 
 def kind_of(mode):
     if stat.S_ISLNK(mode): return 'symlink'
@@ -477,6 +488,79 @@ def tool_search(args):
             'elapsed_seconds': round(time.monotonic() - start, 3),
             'limits': {'matches': limit, 'files': max_files, 'file_bytes': max_bytes,
                        'seconds': SEARCH_SECONDS}}
+
+def tool_find(args):
+    path = args.get('path', '/rootfs/private/var/mobile')
+    pattern = args.get('name_pattern', '')
+    limit = args.get('limit', 200)
+    depth_max = args.get('max_depth', 12)
+    seconds = args.get('max_seconds', 15)
+    min_bytes = args.get('min_bytes', 0)
+    if not isinstance(path, str) or not path.startswith('/') or len(path) > MAX_PATH:
+        raise ValueError('Invalid path')
+    if not isinstance(pattern, str) or not 0 < len(pattern) <= 256:
+        raise ValueError('Invalid name_pattern')
+    if not 1 <= limit <= MAX_FIND_LIMIT: raise ValueError('Invalid limit')
+    if not 0 <= depth_max <= MAX_FIND_DEPTH: raise ValueError('Invalid max_depth')
+    if not 1 <= seconds <= MAX_FIND_SECONDS: raise ValueError('Invalid max_seconds')
+    if type(min_bytes) is not int or min_bytes < 0: raise ValueError('Invalid min_bytes')
+    # Only the real device tree is reachable. /var and its relatives are
+    # jailbreak redirects that expose a DIFFERENT tree, so resolve first and
+    # refuse anything that escapes /rootfs (including through a symlink).
+    resolved = os.path.realpath(path)
+    if not (resolved == REAL_ROOT or resolved.startswith(REAL_ROOT + '/')):
+        raise ValueError('Only paths under ' + REAL_ROOT + ' are searchable')
+    start = time.monotonic()
+    matches = []
+    reasons = []
+    counts = {'entries': 0, 'files': 0, 'directories': 0, 'symlinks': 0}
+    stopped = False
+    # One directory fd at a time: the descriptor table here is small (256), so
+    # queueing every sibling's fd would exhaust it on a wide tree. Descendants
+    # are queued by PATH and opened only when popped.
+    stack = [(resolved, 0)]
+    while stack and not stopped:
+        prefix, depth = stack.pop()
+        try:
+            fd = os.open(prefix, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError:
+            continue
+        try:
+            for name in list_names(fd):
+                if time.monotonic() - start > seconds:
+                    reasons.append('time'); stopped = True; break
+                counts['entries'] += 1
+                if counts['entries'] > MAX_FIND_ENTRIES:
+                    reasons.append('entries'); stopped = True; break
+                try: st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                except OSError: continue
+                mode = st.st_mode
+                if stat.S_ISDIR(mode): counts['directories'] += 1
+                elif stat.S_ISLNK(mode): counts['symlinks'] += 1
+                elif stat.S_ISREG(mode): counts['files'] += 1
+                if fnmatch.fnmatchcase(name, pattern):
+                    if not stat.S_ISREG(mode) or st.st_size >= min_bytes:
+                        matches.append({'path': prefix + '/' + name, 'type': kind_of(mode),
+                                        'size': st.st_size if stat.S_ISREG(mode) else None})
+                        if len(matches) >= limit:
+                            reasons.append('limit'); stopped = True; break
+                # Only entries whose lstat says "directory" are queued, each
+                # reopened with O_NOFOLLOW, so a symlink is reported but never
+                # entered: the walk cannot leave the tree or loop.
+                if stat.S_ISDIR(mode) and depth < depth_max:
+                    stack.append((prefix + '/' + name, depth + 1))
+        finally:
+            os.close(fd)
+    unique = []
+    for reason in reasons:
+        if reason not in unique: unique.append(reason)
+    return {'root': resolved, 'matches': matches, 'matches_count': len(matches),
+            'truncated': bool(unique), 'reasons': unique,
+            'entries_scanned': counts['entries'], 'files': counts['files'],
+            'directories': counts['directories'], 'symlinks_not_followed': counts['symlinks'],
+            'elapsed_seconds': round(time.monotonic() - start, 3),
+            'limits': {'matches': limit, 'depth': depth_max, 'seconds': seconds, 'entries': MAX_FIND_ENTRIES},
+            'read_only': True}
 
 def tool_read_chunk(args):
     offset = args.get('offset', 0); length = args.get('length', 131072)
@@ -993,6 +1077,8 @@ def invoke(name, args):
         return {'lines': result['stdout'].splitlines()[:101], 'limit': 100, 'executable': executable}
     if name == 'jb_exec':
         return rt.command(args['command'], args['project'], args.get('timeout', 15), args.get('output_limit', 16384))
+    if name == 'jb_find':
+        return tool_find(args)
     with rt.LOCK:
         if name in ('jb_read_file', 'jb_write_file', 'jb_edit_file'):
             with rt.target(args['project'], args['path']) as (fd, leaf):

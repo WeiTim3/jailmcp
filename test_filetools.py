@@ -1181,6 +1181,7 @@ class Authorization(Fixture):
         'jb_delete': {'project': 'main', 'path': 'x'},
         'jb_rename': {'project': 'main', 'src': 'x', 'dst': 'y'},
         'jb_search': {'project': 'main'},
+        'jb_find': {'name_pattern': 'x'},
         'jb_read_chunk': {'project': 'main', 'path': 'x'},
         'jb_write_chunk': {'project': 'main', 'path': 'x', 'offset': 0, 'data_base64': ''},
         'jb_projects': {},
@@ -1200,15 +1201,15 @@ class Authorization(Fixture):
                     'jb_list_dir', 'jb_stat', 'jb_delete', 'jb_rename', 'jb_search',
                     'jb_read_chunk', 'jb_write_chunk', 'jb_projects',
                     'jb_mkdir', 'jb_upload_begin', 'jb_upload_chunk',
-                    'jb_upload_commit', 'jb_upload_abort']
+                    'jb_upload_commit', 'jb_upload_abort', 'jb_find']
         self.assertEqual([tool['name'] for tool in b.TOOLS], expected)
         self.assertEqual(sorted(b.SPEC), sorted(expected))
         for tool in b.TOOLS:
             self.assertFalse(tool['inputSchema']['additionalProperties'])
-        self.assertEqual(b.VERSION, '0.3.6')
+        self.assertEqual(b.VERSION, '0.3.7')
         # 0.3.5 appends five tools after the twenty 0.3.4 tools: the first twenty
         # keep their exact names, order and schemas.
-        self.assertEqual(len(expected), 25)
+        self.assertEqual(len(expected), 26)
         self.assertEqual(b.SPEC['jb_mkdir']['required'], ['project', 'path'])
         self.assertEqual(sorted(b.SPEC['jb_mkdir']['properties']),
                          ['mode', 'parents', 'path', 'project'])
@@ -1287,7 +1288,7 @@ class Authorization(Fixture):
         self.assertEqual(sorted(device),
                          ['bridge', 'ios', 'machine', 'pid', 'release', 'source_sha256',
                           'system', 'uid'])
-        self.assertEqual(device['bridge'], '0.3.6')
+        self.assertEqual(device['bridge'], '0.3.7')
 
     def test_no_root_helper_no_token_no_root_widening(self):
         self.put('x', b'x')

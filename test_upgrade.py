@@ -720,22 +720,23 @@ class UpgradeHelperTests(UpgradeCase):
             self.assertIsNone(lc.known_set(mixed))
             self.assertIsNone(lc.known_set(dict(mixed, **{'bridge.py': 'f' * 64})))
 
-    def test_packaged_payload_matches_the_deployed_0_3_6_release(self):
-        """0.3.7 changes control scripts only; its payload is the deployed 0.3.6 payload.
+    def test_packaged_payload_and_the_deployed_0_3_6_runtime(self):
+        """0.3.9 adds jb_find, so bridge.py now differs from the deployed 0.3.6 set.
 
-        These four digests were extracted from the shipped
-        0.3.6-1+experimental deb. Because they still equal this release's packaged
-        set, a real 0.3.6 -> 0.3.7 upgrade passes the runtime allowlist through its
-        'packaged' branch and needs no extra KNOWN_SETS entry; if any runtime file
-        ever changes, this test fails and the allowlist has to be extended first.
+        That older set therefore has to stay listed as an upgrade source; if any
+        other runtime file ever changes it needs its own allowlist entry too.
         """
-        shipped = {'launcher.py': 'b905c063a8e7235b2e40cd1e3137e77372537d4611ff0af1e410049e9f96b497',
-                   'maintenance_runtime.py': 'e38fe25d1d61ba759824a3d17af2101af0fbc1a6533c3444e8636211d95af46a',
-                   'bridge.py': '1d64cb7fe9de833751e0dc3d7a3fcb123b108afd99df07c27ffbed3b0539c385',
-                   'mobile_setup.py': '78ed4a0f75a16ba15298649713db62d3434c86e894ba0a3cace5385907389550'}
-        self.assertEqual(PACKAGED, shipped)
+        deployed = {'launcher.py': 'b905c063a8e7235b2e40cd1e3137e77372537d4611ff0af1e410049e9f96b497',
+                    'maintenance_runtime.py': 'e38fe25d1d61ba759824a3d17af2101af0fbc1a6533c3444e8636211d95af46a',
+                    'bridge.py': '1d64cb7fe9de833751e0dc3d7a3fcb123b108afd99df07c27ffbed3b0539c385',
+                    'mobile_setup.py': '78ed4a0f75a16ba15298649713db62d3434c86e894ba0a3cace5385907389550'}
+        self.assertEqual(lc.KNOWN_SETS['0.3.6-1'], deployed)
+        for name in ('launcher.py', 'maintenance_runtime.py', 'mobile_setup.py'):
+            self.assertEqual(PACKAGED[name], deployed[name])
+        self.assertNotEqual(PACKAGED['bridge.py'], deployed['bridge.py'])
         with patch.object(lc, 'HASHES', dict(PACKAGED)):
             self.assertEqual(lc.known_set(dict(PACKAGED)), 'packaged ' + lc.VERSION)
+            self.assertEqual(lc.known_set(dict(deployed)), '0.3.6-1')
 
     def test_helper_refuses_when_packaged_bridge_changed(self):
         harness = Harness(self, release='0.3.3-1+experimental')
@@ -1184,10 +1185,10 @@ class RestoreHelperTests(UpgradeCase):
 
     def test_helper_notes_a_dpkg_version_mismatch_but_still_restores(self):
         harness = self.retained()
-        with patch.object(lc, 'installed_version', Mock(return_value='0.3.9-1+experimental')):
+        with patch.object(lc, 'installed_version', Mock(return_value='9.9.9-1+experimental')):
             status, out = harness.helper()
         self.assertEqual(status, 0, out)
-        self.assertIn('dpkg records 0.3.9-1+experimental', out)
+        self.assertIn('dpkg records 9.9.9-1+experimental', out)
         self.assertEqual(harness.snapshot()['pointer'], harness.before['pointer'])
 
     def test_helper_restores_the_pointer_when_the_payload_is_unchanged(self):

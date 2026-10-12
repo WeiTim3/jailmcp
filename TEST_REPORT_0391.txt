@@ -1,0 +1,32 @@
+OpenMinis-Jailbreak 0.3.9-1+experimental — 测试报告（jb_find：搜索真实设备文件系统）
+================================================================================
+DEB: OpenMinis-Jailbreak_0.3.9-1+experimental_iphoneos-arm64e.deb
+SHA256: b980e18a6021b24011d6fa0fb7ffd8da4631ec07baa31c8079c30148f689b021
+可复现构建: 连续两次构建字节完全一致（SOURCE_DATE_EPOCH 固定、dpkg-deb --root-owner-group -Zgzip -z9）
+源码归档: OpenMinis-Jailbreak_0.3.9-1+experimental-source.tar.gz（见 SHA256SUMS）
+移动端 payload: 只有 bridge.py 变化（VERSION 0.3.6 -> 0.3.7，新增 jb_find，sha256 e74d21d5cc1189911617d9e2b5f6e28dead7466f7cf68082206f9c9cc3aaaf43）；
+         launcher.py / maintenance_runtime.py / mobile_setup.py 与 0.3.6 逐字节相同。
+         因 bridge.py 变了，升级白名单新增 KNOWN_SETS['0.3.6-1']，0.3.6 / 0.3.7 / 0.3.8 均可原地升级。
+
+一、本版改动（0.3.9）
+--------------------
+新增工具 jb_find：在 /rootfs（真实设备树）下按名字递归搜索，默认 /rootfs/private/var/mobile。
+只读、有界（墙钟 / 条目数 / 深度 / 匹配数），符号链接目录只报告不进入，不能写。
+
+动机：roothide 设备上 /var 是被重定向的（jailbreak 自己的树），设备真实数据在 /rootfs/private/var/…；
+此前文件工具只看得到重定向那棵，所以会"搜不到"真实存在的文件（例如 DumpDecrypter 的 ipa）。
+
+实现要点（真机踩坑）：初版用"已打开目录 fd 的栈"遍历，宽目录会把几百个 fd 同时占住，
+撞上本机 soft RLIMIT_NOFILE = 256 而 EMFILE；改为按路径入栈、一次只开一个目录 fd 后解决。
+
+二、测试（本机 Linux + Python 3.12；Python 3.9 仅做语法解析）
+----------------------------------------------------------
+233 项全部通过：
+  test_package 23、test_filetools 74、test_safety 31、test_upgrade 56、test_api 39、test_supervisor 10。
+
+三、本轮真机验证（iPhone15,3 / iOS 16.4.1 / Dopamine Roothide）
+---------------------------------------------------------------
+- 设备现运行 bridge 0.3.7（自更新通道部署：stage -> validate -> apply，约 6 秒切换，健康检查通过，token 不受影响）。
+- jb_find 定向搜索 /rootfs/private/var/mobile/Documents/DumpDecrypter 命中 5 个 ipa，0.008s，
+  含 光·遇_0.15.6.ipa（2247737734 字节，sha256 b02d9b3bf8112282c7fafd3129726ea1a0caf49c31a37da5a41eb6d4746996fb）。
+- 边界：路径 / 被拒；/var/...（重定向树）解析后落在 /rootfs/var/... 故放行（属另一棵树，非真实数据）。
