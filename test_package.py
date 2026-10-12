@@ -155,9 +155,28 @@ class PackageTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self._preinst_after_removal(prior_state='install ok installed')
 
-    def test_upgrade_action_always_refused(self):
-        with self.assertRaises(RuntimeError):
-            lc.main('preinst',['upgrade','0.3.2-3+experimental'])
+    def test_upgrade_action_uses_the_upgrade_path(self):
+        # The 0.3.3 clean-install-only guard no longer refuses 'upgrade': the
+        # upgrade path validates the *installed* runtime and the plist first.
+        with patch.object(lc,'upgrade_preinst',Mock(side_effect=RuntimeError('upgrade-path'))) as path, \
+             patch.object(lc,'preflight') as pre:
+            with self.assertRaises(RuntimeError): lc.main('preinst',['upgrade','0.3.2-3+experimental'])
+            path.assert_called_once();pre.assert_not_called()
+        with patch.object(lc,'preflight',return_value=Path('/')), \
+             patch.object(lc,'runtime_hashes',return_value=None), \
+             patch.object(lc,'run') as run:
+            with self.assertRaises(RuntimeError): lc.main('preinst',['upgrade','0.3.3-1+experimental'])
+            run.assert_not_called()
+            self.assertEqual(lc.STAGE,'upgrade-runtime-allowlist')
+
+    def test_runtime_allowlist_is_explicit(self):
+        self.assertEqual(sorted(lc.KNOWN_SETS['0.3.3-1']), sorted(lc.RUNTIME))
+        self.assertEqual(sorted(lc.KNOWN_SETS['0.3.5-1']), sorted(lc.RUNTIME))
+        self.assertEqual(lc.KNOWN_SETS['0.3.3-1']['bridge.py'],
+                         'ec7d57759c5841090db1ec999b86d769e89d3156e5c3fad8cdf5b1cf8c4b9003')
+        self.assertEqual(lc.KNOWN_SETS['0.3.5-1']['bridge.py'],
+                         'dfa21e1a76329ed5774559e4a67661dcb4fdd5c03fc2d4877d11e2afcf55b73f')
+        self.assertNotEqual(lc.KNOWN_SETS['0.3.3-1']['bridge.py'], lc.KNOWN_SETS['0.3.5-1']['bridge.py'])
 
     def test_unreadable_status_falls_back_to_artifacts_conservatively(self):
         with tempfile.TemporaryDirectory() as d:

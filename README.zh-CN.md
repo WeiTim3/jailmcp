@@ -1,9 +1,30 @@
-# OpenMinis-Jailbreak 0.3.5-1+experimental
+# OpenMinis-Jailbreak 0.3.6-1+experimental
 
 以 launchd 服务形式运行、并通过本机 MCP 向 OpenMinis 提供越狱侧能力的服务包。
 OpenMinis 本体不需要越狱权限、不需要注入。
 
-## 本版改动（0.3.5）
+## 本版改动（0.3.6）
+
+**支持原地升级，不再需要先卸载。** 在 Sileo 里直接更新即可：
+
+- `preinst upgrade`：完整预检（root、dpkg 架构 `iphoneos-arm64e`、Roothide 根映射、mobile 身份与组）；
+  校验已安装运行时是否命中已知良好白名单（0.3.3-1、0.3.5-1 与本版）、plist 形状是否正确；
+  把旧运行时、plist 与移动端 active 指针快照到 `/usr/local/lib/openminis-jb-transaction`
+  （root 所有、0700，含 boot id）；随后有界停止服务并确认监听端口已释放。
+  **任何一步失败都在任何改动之前中止**，并保证服务重新运行。
+- `postinst configure`：确保 plist 与 root 运行时为本包版本；以 UID501 只读核对 token/config/audit
+  指纹未变；若打包 `bridge.py` 与当前 active 版本不同，则入 `versions-v030/` 并**原子**切换
+  active 指针（`previous` = 旧 active，`jb_rollback` 依旧可用）；启动服务并做认证健康检查；
+  成功即标记提交并丢弃快照。
+- 失败时：按快照回滚 root 运行时、plist 与移动端 active 指针，重启旧版本，并以非零状态退出
+  （dpkg 可正常收尾）。全程不清理、不重置 token／配置／审计／版本目录。
+- 移动端 `bridge.py` 版本号升到 `0.3.6`（功能与 0.3.5 相同，用于演练版本切换）；
+  `launcher.py`、`maintenance_runtime.py`、`mobile_setup.py` 逐字节未变。
+
+快照只有在“同一 boot、且记录的内容与磁盘现状一致”时才可能被替换/复用，否则拒绝并保留现场；
+这覆盖上一次失败留下的快照、跨 boot 快照、未知/混合运行时、plist 不符、active 版本目录缺失等情况。
+
+## 历史改动（0.3.5）
 
 1. **新增 `jb_mkdir`**：只建一级目录（`parents=true` 才逐段创建），路径规则与其它文件工具一致
    （项目根内相对路径、逐段 `O_NOFOLLOW`、`.bridge-state` 拒绝）；叶子已存在时拒绝并说明是目录／文件／符号链接；
@@ -42,7 +63,10 @@ OpenMinis 本体不需要越狱权限、不需要注入。
 ## 生命周期
 
 - `preinst install`：root 与 UID501 预检；判断是否会覆盖已安装载荷；失败不修改任何文件。
-- `postinst configure`：UID501 创建 canonical 目录、私有 token/state 与固定 launchd 服务，并做健康检查。
+- `preinst upgrade`：白名单校验已安装运行时与 plist；快照旧运行时／plist／active 指针；有界停止服务。
+- `postinst configure`：UID501 创建 canonical 目录、私有 token/state 与固定 launchd 服务，并做健康检查；
+  若是一次升级，则对账移动端版本（必要时原子切换 active 指针）后启动服务并验证，
+  成功提交、失败按快照回滚并重启旧版本。
 - `prerm remove`：只停止并验证本包同标签服务及其自有子进程；不删 token/state。
 - `postrm remove/purge`：依据 root 所有的凭据，只清理本包的 `.bridge-state`
   （token、配置、版本、审计、锁、临时文件）；保留 canonical 目录内的普通项目文件。
@@ -61,9 +85,10 @@ OpenMinis 侧 MCP 服务器填 `http://127.0.0.1:18765/mcp`，请求头 `Authori
 
 ## 版本兼容
 
-本包为 **干净安装** 语义：拒绝覆盖 dpkg 记录为“已安装”的版本。
-从旧版本迁移前请先卸载并私下备份数据。安装包版本 `0.3.5-1+experimental`，
-移动端 bridge `0.3.5`，MCP API 版本仍为 `3`。
+0.3.6 起支持 **原地升级**：在 Sileo 中直接更新即可，token、配置、审计与已下发的版本目录都保持不变，
+OpenMinis 侧无需重填 token。可原地升级的旧版本为白名单内的 0.3.3-1 与 0.3.5-1；
+更早的版本（例如 0.3.2 系列）仍请先卸载再安装（卸载后可直接重装，不必 purge）。
+安装包版本 `0.3.6-1+experimental`，移动端 bridge `0.3.6`，MCP API 版本仍为 `3`。
 
 ## 工具
 
@@ -78,5 +103,6 @@ OpenMinis 侧 MCP 服务器填 `http://127.0.0.1:18765/mcp`，请求头 `Authori
 
 ## 未验证项
 
-安装、卸载、重启恢复与自身更新链路的真机验收尚未覆盖本版本；
-本机测试运行于 Python 3.12，Python 3.9 仅做语法解析。详见 `TEST_REPORT_0345.txt`。
+本版本的真机**原地升级**验收尚未完成（升级路径已由离线模拟的完整 dpkg 序列覆盖，
+见 `test_upgrade.py`：26 项）；安装、卸载、重启恢复与自身更新链路的真机验收沿用上一版结论。
+本机测试运行于 Python 3.12，Python 3.9 仅做语法解析。详见 `TEST_REPORT_0361.txt`。

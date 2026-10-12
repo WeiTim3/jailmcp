@@ -28,7 +28,9 @@ Priority: optional
 Pre-Depends: python3 (>= 3.9.9-2), python3.9 (>= 3.9.9-2), roothide (>= 0.1.0), launchctl (>= 1:1.2.0)
 Depends: libpython3.9 (>= 3.9.9-2)
 Description: OpenMinis-Jailbreak local API3 mobile service (experimental)
- Clean-install-only canonical OpenMinis-Jailbreak service; no alias or migration.
+ Canonical OpenMinis-Jailbreak service with in-place upgrades: Sileo can update
+ this package without uninstalling, and the token, config and audit survive.
+ No project alias; no data migration.
 ''')
     life=(HERE/'package_lifecycle.py').read_text().replace('HASHES = {}  # Filled by reproducible builder.','HASHES = '+repr(hashes)).replace("REMOVAL = ''  # Filled by reproducible builder.","REMOVAL = "+repr((HERE/'removal_helper.py').read_text()))
     ast.parse(life,feature_version=(3,9))

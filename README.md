@@ -101,6 +101,31 @@ bridge.py（mobile，UID 501）
 
 卸载后可直接重新安装，**不需要先执行 purge**（0.3.3 起放宽：仅当 dpkg 记录为“已安装”时才拒绝覆盖）。
 
+## 原地升级（0.3.6 起）
+
+**不再需要先卸载。** 在 Sileo 里直接更新本包即可，升级过程不会清空 token、配置、审计记录、
+已下发的版本目录或任何用户数据：升级完成后 OpenMinis 侧仍用**原有 token** 连接，
+不需要重新填 MCP 配置。
+
+升级顺序与保证：
+
+1. `preinst upgrade`（此时旧运行时仍在原位）：完整预检（root、dpkg 架构 `iphoneos-arm64e`、
+   Roothide 根映射、mobile 身份与组），校验已安装的 `launcher.py` / `maintenance_runtime.py` /
+   `bridge.py` / `mobile_setup.py` 是否命中**已知良好白名单**（0.3.3-1、0.3.5-1 与本版），
+   校验 plist 形状，然后把旧运行时、plist 与移动端 active 指针快照进
+   `/usr/local/lib/openminis-jb-transaction`（root 所有、0700，并记录 boot id），最后有界停止服务
+   并确认端口已释放。**任何一步失败都在改动前中止**，且服务会被重新拉起。
+2. `postinst configure`（新文件已就位）：确保 plist 与 root 运行时为本包版本；以 UID501 把打包的
+   `bridge.py` 作为新版本入 `versions-v030/` 并原子切换 active 指针（`previous` = 旧 active，
+   `jb_rollback` 仍然可用），随后启动服务并做认证健康检查。
+3. 成功即提交并丢弃快照；失败则按快照回滚旧运行时、旧 plist 与旧 active 指针，重启旧版本，
+   并以非零状态退出（dpkg 能正常收尾，不会留下“无法继续”的包状态）。
+
+升级前后都会以 UID501 只读指纹核对 token / config / audit 未被改动；本包在任何阶段都不写、不读
+token 明文，也不在 root 身份下导入或执行移动端代码。
+
+不支持原地升级的旧版本（例如 0.3.2 系列）仍按老规矩处理：先卸载再安装。
+
 ## 构建
 
 ```
@@ -124,6 +149,17 @@ python3 test_api.py
 3. 文件接口不能写入项目根目录之外；这是有意限制。
 4. `jb_device_info` 的 `ios` 字段依赖 `/System/Library/CoreServices/SystemVersion.plist`；
    读取失败时该字段为 `null`，`release`（内核版本）仍在，但它**不能用来推断 iOS 版本**。
+
+### 新增（0.3.6）
+
+**原地升级**（见上文「原地升级」）：`preinst upgrade` 校验白名单运行时与 plist 形状，
+把旧运行时／plist／移动端 active 指针快照进 `openminis-jb-transaction`（含 boot id），
+再停止服务并确认端口释放；`postinst configure` 以 UID501 对账移动端版本（需要时原子切换
+active 指针并把旧 active 记为 `previous`），启动服务并做认证健康检查，成功即提交。
+失败会回滚运行时、plist 与指针并重启旧版本，且以非零状态退出。
+移动端 `bridge.py` 版本号提升到 `0.3.6`（功能与 0.3.5 相同，仅用于演练版本切换）；
+`launcher.py` 与 `maintenance_runtime.py` 逐字节未变，`mobile_setup.py` 亦未变。
+本版**不清理、不重置**任何 token／配置／审计／版本目录。
 
 ### 新增（0.3.5）
 
@@ -176,11 +212,11 @@ python3 test_api.py
 
 ## 测试
 
-`TEST_REPORT_0341.txt` 记录最近一次完整测试（141 项全部通过，含真实子进程、信号与端口验证；
-其中 `test_filetools.py` 为本版新增的 45 项文件接口用例）。
-测试在 Linux + Python 3.12 上运行；Python 3.9 仅做语法解析，不等同真机验收。
+`TEST_REPORT_0361.txt` 记录最近一次完整测试（198 项全部通过，含真实子进程、信号与端口验证，
+以及 `test_upgrade.py` 的 26 项原地升级用例：模拟完整 dpkg 序列、失败回滚、跨 boot 快照拒绝、
+同版本升级等）。测试在 Linux + Python 3.12 上运行；Python 3.9 仅做语法解析，不等同真机验收。
 
 ## 状态
 
-`0.3.4-1+experimental`。实验性项目，主要在作者的一台设备（iPhone15,3 / iOS 16.4.1）上验证，
-请自行评估风险后再安装。
+`0.3.6-1+experimental`（移动端 bridge `0.3.6`，MCP API 仍为 `3`）。实验性项目，主要在作者的一台
+设备（iPhone15,3 / iOS 16.4.1）上验证，请自行评估风险后再安装。

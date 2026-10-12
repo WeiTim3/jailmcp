@@ -69,11 +69,33 @@ class FixedDefectRegressionTests(unittest.TestCase):
 
 
 class SafetyTests(unittest.TestCase):
-    def test_upgrade_rejected_before_any_operations(self):
+    def test_upgrade_refused_before_any_operation_for_unknown_baseline(self):
+        # 0.3.6 replaced the clean-install-only guard with in-place upgrades, but an
+        # upgraded baseline still has to match the explicit known-good allowlist.
         for args in (['upgrade','0.3.0-1'],['upgrade','0.3.1-1'],['upgrade','99']):
-            with patch.object(lc,'preflight') as pre,patch.object(lc,'run') as run,patch.object(lc,'remove_residue') as clean:
+            with patch.object(lc,'preflight',return_value=Path('/')) as pre, \
+                 patch.object(lc,'runtime_hashes',return_value=None), \
+                 patch.object(lc,'run') as run,patch.object(lc,'remove_residue') as clean:
                 with self.assertRaises(RuntimeError): lc.main('preinst',args)
-                pre.assert_not_called();run.assert_not_called();clean.assert_not_called()
+                pre.assert_called_once();run.assert_not_called();clean.assert_not_called()
+                self.assertEqual(lc.STAGE,'upgrade-runtime-allowlist')
+
+    def test_upgrade_never_imports_packaged_runtime_as_root(self):
+        # Every mobile-side step of the upgrade runs through mobile(), which drops
+        # to UID501 first, and the helpers only read or compile mobile state.
+        import ast
+        source = Path(lc.__file__).read_text()
+        self.assertIn('], mobile=True, timeout=timeout)', source)
+        tree = ast.parse(source)
+        imported = {alias.name.split('.')[0] for node in ast.walk(tree)
+                    if isinstance(node, ast.Import) for alias in node.names}
+        imported |= {node.module.split('.')[0] for node in ast.walk(tree)
+                     if isinstance(node, ast.ImportFrom) and node.module}
+        self.assertEqual(imported & {'maintenance_runtime', 'mobile_setup', 'launcher', 'bridge'}, set())
+        for helper in ('MOBILE_FINGERPRINT', 'MOBILE_RECONCILE', 'MOBILE_RESTORE'):
+            text = getattr(lc, helper)
+            self.assertIn('rt.mobile()', text)
+            self.assertNotIn('exec(', text)
 
     def test_install_over_installed_rejected_with_status_probe_only(self):
         # Reinstalling over a package dpkg still records as installed stays refused,
@@ -155,7 +177,7 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(sorted(bridge.SPEC),sorted(tool['name'] for tool in bridge.TOOLS))
         for tool in bridge.TOOLS:
             self.assertFalse(tool['inputSchema']['additionalProperties'])
-        self.assertEqual(bridge.VERSION,'0.3.5')
+        self.assertEqual(bridge.VERSION,'0.3.6')
         self.assertEqual(rt.STATE,Path('/var/mobile/Documents/OpenMinis-Jailbreak/.bridge-state'))
         # No new tool can widen its own roots: none takes a 'projects' argument and
         # none reaches outside the configured roots.
