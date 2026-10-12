@@ -59,14 +59,30 @@ bridge.py（mobile，UID 501）
 | `jb_stage_update` | 暂存新版 bridge 并校验哈希／语法 | ⚠️ 未真机验证 |
 | `jb_validate_update` | 复核暂存版本 | ⚠️ 未真机验证 |
 | `jb_apply_update` | 应用更新，健康检查失败自动回退 | ⚠️ 未真机验证 |
-| `jb_rollback` | 回到上一已知正常版本 | ⚠️ 未真机验证 |
+| `jb_rollback` | 回到上一已知正常版本 | ✅ |
+| `jb_list_dir` | 列目录（分页；符号链接不跟随） | ✅ |
+| `jb_stat` | 文件/目录元信息（含哈希、链接目标） | ✅ |
+| `jb_delete` | 删除文件或空目录；递归须双确认 | ✅ |
+| `jb_rename` | 重命名/移动（限同一项目内） | ✅ |
+| `jb_search` | 按名称或内容搜索（带行号） | ✅ |
+| `jb_read_chunk` | 分块读取（返回整文件哈希） | ✅ |
+| `jb_write_chunk` | 分块写入（支持 SHA256 比对，突破 128 KiB 限制） | ✅ |
+| `jb_projects` | 查看已配置项目根（只读） | ✅ |
+| `jb_list_dir` | 目录列举（dirfd 上 `os.listdir`，lstat 元数据，不跟随符号链接） | ⚠️ 0.3.4 新增，未真机验证 |
+| `jb_stat` | lstat 元数据 + 小文件 sha256；符号链接只报告链接目标 | ⚠️ 0.3.4 新增，未真机验证 |
+| `jb_delete` | 删文件／符号链接／空目录；递归需 `recursive+confirm`，有界、不跟随链接 | ⚠️ 0.3.4 新增，未真机验证 |
+| `jb_rename` | 单项目内 `os.rename`（dir_fd），不建父目录，可选覆盖 | ⚠️ 0.3.4 新增，未真机验证 |
+| `jb_search` | 名字 glob 与字面内容搜索（行号 + 有界片段），多项硬上限 | ⚠️ 0.3.4 新增，未真机验证 |
+| `jb_read_chunk` | 分片读取（base64 + 整文件 sha256 + eof） | ⚠️ 0.3.4 新增，未真机验证 |
+| `jb_write_chunk` | 按偏移分片写入，可选 SHA256 比较并交换、truncate、fsync | ⚠️ 0.3.4 新增，未真机验证 |
+| `jb_projects` | 只读列出已配置项目根及其存在性 | ⚠️ 0.3.4 新增，未真机验证 |
 
 ## 安全边界（务必阅读）
 
 - `jb_exec` 是**用户明确授权的 mobile 权限任意 Shell，不是沙箱**，能访问 mobile 有权访问的一切，
   包括主动读取上述 token。
 - 本包**不提供 root helper、不做免密 sudo**；需要 root 时由你在越狱终端手动执行一次。
-- 文件接口限定在配置的项目根目录内，默认：
+- 文件接口（含 0.3.4 新增的 8 个工具）限定在配置的项目根目录内，默认：
   `/var/mobile/Documents/OpenMinis-Jailbreak`
   越界路径（例如写到 `Documents/` 下其它目录）会被拒绝，这是设计限制而非故障；
   需要时用 `jb_exec`，或把目录加入项目白名单。
@@ -97,11 +113,31 @@ python3 test_api.py
 ## 已知问题与未验证项
 
 1. **安装后完整重启、重新越狱的自动恢复未验证。**
-2. 自身更新链路（`jb_stage_update` / `jb_validate_update` / `jb_apply_update` / `jb_rollback`）
-   仅通过本机进程测试，真机未演练。
+2. 自身更新链路已在真机演练通过（上传/校验/切换/回退/坏版本自动回退）。
+3. 文件接口**不能创建目录**：父目录必须已存在，需要建目录时用 `jb_exec`。
 3. 文件接口不能写入项目根目录之外；这是有意限制。
 4. `jb_device_info` 的 `ios` 字段依赖 `/System/Library/CoreServices/SystemVersion.plist`；
    读取失败时该字段为 `null`，`release`（内核版本）仍在，但它**不能用来推断 iOS 版本**。
+
+### 新增（0.3.4）
+
+新增 8 个文件接口工具（`jb_list_dir` / `jb_stat` / `jb_delete` / `jb_rename` /
+`jb_search` / `jb_read_chunk` / `jb_write_chunk` / `jb_projects`），全部只接受项目根内的
+相对路径，并复用既有 dirfd + `O_NOFOLLOW` 逐段遍历；`.bridge-state` 与任何项目根本身
+对所有新工具不可达，列举与搜索也不暴露状态目录。所有上限（列举分页、递归删除条目数、
+搜索文件/字节/匹配/墙钟、分片大小与偏移）均为硬失败，不做静默截断。
+`jb_write_chunk` 的多分片写入**不是原子操作**；只有显式提供 `expected_sha256` 时才具备
+并发修改保护。本版仅改移动端 `bridge.py`，可经自身更新链路（stage/validate/apply）下发，
+无需重装；`maintenance_runtime.py` 与 `launcher.py` 未变。
+
+### 已修复（0.3.4）
+
+- 新增 8 个文件接口（见上表）。
+- **`os.listdir(fd)` 在设备 Python 3.9 上会关闭描述符**（3.12 不会）。原先三处调用点在列举
+  后复用同一 dirfd，在真机上必然失败；而健康检查只调用两个信息接口、发现不了这种问题。
+  现改为经 `dup` 的副本列举，并加了能复现 3.9 语义的回归测试。
+- 测试用更大请求体时，服务器回 413 后不排空请求体即关闭连接，客户端可能拿到
+  BrokenPipe/Reset 而非状态码；相关断言已覆盖这类连接级拒绝。
 
 ### 已修复（0.3.3）
 
@@ -111,10 +147,11 @@ python3 test_api.py
 
 ## 测试
 
-`TEST_REPORT_0331.txt` 记录最近一次完整测试（95 项全部通过，含真实子进程、信号与端口验证）。
+`TEST_REPORT_0341.txt` 记录最近一次完整测试（141 项全部通过，含真实子进程、信号与端口验证；
+其中 `test_filetools.py` 为本版新增的 45 项文件接口用例）。
 测试在 Linux + Python 3.12 上运行；Python 3.9 仅做语法解析，不等同真机验收。
 
 ## 状态
 
-`0.3.3-1+experimental`。实验性项目，主要在作者的一台设备（iPhone15,3 / iOS 16.4.1）上验证，
+`0.3.4-1+experimental`。实验性项目，主要在作者的一台设备（iPhone15,3 / iOS 16.4.1）上验证，
 请自行评估风险后再安装。

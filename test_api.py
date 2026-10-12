@@ -206,7 +206,7 @@ class HTTP(Fixture):
         req=urllib.request.Request('http://127.0.0.1:%d/mcp'%self.port,body,headers=headers)
         return urllib.request.urlopen(req,timeout=3)
     def test_authenticated_list(self):
-        with self.post() as r:self.assertEqual(len(json.load(r)['result']['tools']),12)
+        with self.post() as r:self.assertEqual(len(json.load(r)['result']['tools']),20)
     def test_authentication_required(self):
         for headers in ({},{'Authorization':'Bearer incorrect'}):
             with self.assertRaises(urllib.error.HTTPError) as e:self.post(headers=headers)
@@ -216,11 +216,51 @@ class HTTP(Fixture):
             with self.assertRaises(urllib.error.HTTPError) as e:self.post(headers=dict({'Authorization':'Bearer '+rt.token()},**extra))
             self.assertEqual(e.exception.code,403)
     def test_body_limit(self):
-        with self.assertRaises(urllib.error.HTTPError) as e:self.post(b'x'*(b.MAX_BODY+1))
-        self.assertEqual(e.exception.code,413)
+        # The server answers 413 and closes the connection without draining an
+        # oversized body, so the client may observe either the status code or a
+        # connection reset while it is still sending. Both mean "refused"; what
+        # must never happen is the body being accepted.
+        try:
+            self.post(b'x' * (b.MAX_BODY + 1))
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 413)
+        except (urllib.error.URLError, OSError) as e:
+            # The server refuses and closes without draining the oversized body, so the
+            # client observes a connection-level error (reset / broken pipe) rather than
+            # a status code. Any of those still means "refused", never "accepted".
+            message = str(e).lower()
+            self.assertTrue(
+                any(word in message for word in ('reset', 'broken pipe', 'aborted', 'connection')),
+                'unexpected refusal error: %r' % (e,))
+        else:
+            self.fail('oversized body was accepted')
+        # Boundary control: a normally sized body is read and rejected later as JSON,
+        # never as a size rejection. Kept small so the check is timing-independent.
+        try:
+            self.post(b'x' * 4096)
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 400)
+        except urllib.error.URLError as e:
+            self.fail('under-limit body was not read: %s' % e)
     def test_bad_json(self):
         with self.assertRaises(urllib.error.HTTPError) as e:self.post(b'{')
         self.assertEqual(e.exception.code,400)
+    def test_full_size_chunk_over_the_wire(self):
+        # A MAX_CHUNK (262144 byte) payload is ~349528 base64 characters, so the
+        # transport limit itself has to be large enough for jb_write_chunk.
+        piece=b'w'*b.MAX_CHUNK
+        body=json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{
+            'name':'jb_write_chunk','arguments':{'project':'main','path':'wire.bin','offset':0,
+            'data_base64':base64.b64encode(piece).decode(),'final':True}}}).encode()
+        self.assertGreater(len(body),200000)
+        with self.post(body) as r:result=json.load(r)['result']
+        self.assertFalse(result['isError'])
+        written=json.loads(result['content'][0]['text'])
+        self.assertEqual(written['written'],b.MAX_CHUNK)
+        self.assertEqual(written['sha256'],hashlib.sha256(piece).hexdigest())
+        self.assertTrue(written['synced'])
+        with rt.target('main','wire.bin') as (fd,name):
+            self.assertEqual(rt.read_at(fd,name,limit=b.MAX_CHUNK),piece)
     def test_concurrency_bound(self):
         for _ in range(4):self.assertTrue(self.server.slots.acquire(False))
         try:

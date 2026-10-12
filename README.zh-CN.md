@@ -1,11 +1,18 @@
-# OpenMinis-Jailbreak 0.3.3-1+experimental
+# OpenMinis-Jailbreak 0.3.4-1+experimental
 
 以 launchd 服务形式运行、并通过本机 MCP 向 OpenMinis 提供越狱侧能力的服务包。
 OpenMinis 本体不需要越狱权限、不需要注入。
 
 ## 本版改动
 
-1. **修复 `jb_process_list`**：原先执行相对命令 `ps`，而守护进程 PATH 为
+1. **新增 8 个文件接口工具**：`jb_list_dir`、`jb_stat`、`jb_delete`、`jb_rename`、
+   `jb_search`、`jb_read_chunk`、`jb_write_chunk`、`jb_projects`。全部只接受已配置项目根
+   内的相对路径，复用既有 dirfd + `O_NOFOLLOW` 逐段遍历；`.bridge-state` 与项目根本身
+   对所有新工具不可达；列举／递归删除／搜索均有硬上限并明确报错，不静默截断；
+   符号链接一律不跟随。`jb_write_chunk` 的分片写入不是原子操作，仅当显式提供
+   `expected_sha256` 时具备并发修改保护。本版只改移动端 `bridge.py`＋测试，
+   可经自身更新链路下发，无需重装。
+2. **修复 `jb_process_list`**：原先执行相对命令 `ps`，而守护进程 PATH 为
    `/usr/bin:/bin:/usr/sbin:/sbin`，不含越狱工具目录，目标设备上 `ps` 仅存在于
    `/rootfs/bin/ps`。现按固定候选顺序（`/rootfs/bin/ps` → `/bin/ps` → `/usr/bin/ps`
    → `/usr/local/bin/ps`）探测可执行文件，再用绝对路径执行；候选为常量，不接受调用者输入。
@@ -16,7 +23,7 @@ OpenMinis 本体不需要越狱权限、不需要注入。
    仅当记录为“已安装”时拒绝覆盖；卸载后残留的 `config-files` 记录允许直接重新安装，
    **不再要求手动 `dpkg --purge`**。拒绝前唯一的动作是一次只读状态查询。
 
-两项修复均为只读逻辑，未改变权限模型，未新增 root 能力。
+以上变更均未改变权限模型，未新增 root 能力，也未提供任何可扩大授权根的工具。
 
 ## 生命周期
 
@@ -41,10 +48,21 @@ OpenMinis 侧 MCP 服务器填 `http://127.0.0.1:18765/mcp`，请求头 `Authori
 ## 版本兼容
 
 本包为 **干净安装** 语义：拒绝覆盖 dpkg 记录为“已安装”的版本。
-从旧版本迁移前请先卸载并私下备份数据。安装包版本 `0.3.3-1+experimental`，
-移动端 bridge `0.3.3`，MCP API 版本仍为 `3`。
+从旧版本迁移前请先卸载并私下备份数据。安装包版本 `0.3.4-1+experimental`，
+移动端 bridge `0.3.4`，MCP API 版本仍为 `3`。
+
+## 工具
+
+本版共 20 个工具：原有 12 个（设备信息、进程、维护状态、读写/编辑文件、执行命令、更新与回退）
++ 新增 8 个文件接口（列目录、元信息、删除、重命名、搜索、分块读、分块写、项目列表）。
+详见 README.md 的工具表。
+
+## 关键修复
+
+`os.listdir(fd)` 在 Python 3.9（设备运行时）会关闭该描述符，而 3.12 不会；原先列举后复用
+同一 dirfd 的代码在真机上必然失败，且启动健康检查无法发现。现通过 `dup` 后的副本列举。
 
 ## 未验证项
 
 安装、卸载、重启恢复与自身更新链路的真机验收尚未覆盖本版本；
-本机测试运行于 Python 3.12，Python 3.9 仅做语法解析。详见 `TEST_REPORT_0331.txt`。
+本机测试运行于 Python 3.12，Python 3.9 仅做语法解析。详见 `TEST_REPORT_0341.txt`。
