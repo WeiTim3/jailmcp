@@ -77,4 +77,4 @@ jobs:
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" --prerelease --title "$GITHUB_REF_NAME" --notes "Built from ${GITHUB_SHA}"
-          gh release upload "$GITHUB_REF_NAME" OpenMinis-Jailbreak_*.deb OpenMinis-Jailbreak_*-source.tar.gz --clobber
+          gh release upload "$GITHUB_REF_NAME" OpenMinis-Jailbreak_*.deb --clobber
