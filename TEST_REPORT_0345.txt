@@ -1,0 +1,137 @@
+OpenMinis-Jailbreak 0.3.5-1+experimental — 测试报告
+=====================================================
+DEB SHA256: 584a5a49dc950762c710b09f4085a29e51138033da604981194c274531627bd1
+可复现构建: 连续两次构建字节完全一致（SOURCE_DATE_EPOCH 固定，dpkg-deb -Zgzip -z9）
+移动端 bridge: 0.3.5（api 仍为 3，工具 20 → 25）
+未变更文件: source-v030/launcher.py 与 source-v030/maintenance_runtime.py 与 0.3.4 逐字节相同
+            （sha256 b905c063…96b497 / e38fe25d…95af46a），二者 root 所有、不经自更新下发。
+
+一、本版新增 5 个工具（全部只在 bridge.py 内）
+----------------------------------------------
+jb_mkdir(project, path, parents=false, mode="0700")
+    建一级目录。path 必须是项目根内相对路径（绝对路径、空组件、"."、".."、".bridge-state"
+    与任何符号链接组件一律拒绝）。parents=false 时缺父目录直接拒绝；parents=true 时逐段创建，
+    每建一段立即用 O_NOFOLLOW 重新打开并校验，中途无法插入符号链接。mode 是八进制字符串，
+    只接受 0700..0777（含 04000/02000/01000 特权的值一律拒绝）。创建时把 umask 收紧为 0077
+    （永远更严格，且调用后立即恢复），随后通过已打开的新目录描述符 fchmod 到请求值，结果
+    不会超出请求 mode。叶子已存在时拒绝，并在错误文本里说明是 dir / file / symlink / other。
+jb_upload_begin(project="", name="") -> upload_id
+    在私有状态目录内 uploads-v030/ 下开一个暂存上传，返回不透明 id（os.urandom 16 字节 hex）。
+    并发暂存上传上限 4，暂存总量上限 256 MiB；open_uploads / staged_total / swept_stale 均在
+    返回里报告。过期暂存只在 begin 时由有界清扫处理。
+jb_upload_chunk(upload_id, offset, data_base64, expected_sha256="")
+    与 jb_write_chunk 相同的偏移与 CAS 语义：offset 不得超过暂存当前长度（无 truncate 参数）、
+    offset+len 与全上传区总量都不允许越过 256 MiB、expected_sha256 在写入前比对整份暂存内容。
+    返回 written / offset / 整份暂存 sha256 / size。默认 fsync。
+jb_upload_commit(upload_id, project, path, expected_sha256="", overwrite=false)
+    校验装配结果（提供 expected_sha256 时逐字节比对），再用**一次 os.replace**（锚定目标 dirfd）
+    就位；跨文件系统（EXDEV）时退化为“在目标目录内写临时文件 → fsync → os.replace”，任何失败
+    路径都会删除该临时文件。目标已存在且 overwrite!=true 时拒绝；目录一律拒绝；符号链接、
+    非 regular、硬链接（nlink!=1）、非 mobile 属主的目标一律拒绝；.bridge-state 一律拒绝。
+    成功后删除暂存并作废 upload_id（不可复用）。
+jb_upload_abort(upload_id)
+    删除暂存并作废 id；幂等（对已不存在的 id 返回 aborted=true, removed=false）。
+
+“原子”覆盖什么：只有目标**名字**的切换是原子的——单个 rename(2) 在目标 dirfd 上完成，
+并发的读取者看到的要么是旧文件、要么是完整的新文件，绝无半成品；复制回退路径同样如此。
+同时 fsync 目标目录，使该名字的替换尽量落盘。
+“原子”不覆盖什么：不是多文件事务；不保证掉电后一定可见（只做到 fsync 尽力而为）；
+“目标存在则拒绝”是检查后紧接着 rename，存在经典的 TOCTOU 窗口（同一时刻另一个进程若新建
+同名文件可能被直接替换）；upload_id 不是凭据，同一 UID 的进程只要能读私有状态目录就能提交它。
+
+暂存安全性：暂存数据位于私有状态目录，文件工具按名字（.bridge-state）与 inode 双重拒绝，
+列举与搜索也不暴露；提交前项目里看不到任何东西。进程中途死亡只留下无害的暂存，只由有界清扫
+（默认 1 小时未动、每次最多检查 64 项 / 删除 16 项，且只处理上传区内形如本版 id 的目录）
+或显式 abort 移除；清扫永远不会触碰上传区之外的数据。
+上传区目录若因异常无法 rmdir，会被改名为 dead-<id>，从而把该 id 永久排除在命名空间之外。
+
+二、安全不变量（未放宽）
+------------------------
+所有新路径仍走 rt.target / rt.project_fd 的 dirfd + O_NOFOLLOW 逐段遍历；.bridge-state 与
+项目根自身对所有新工具不可达；新增工具均不接受 "projects" 参数、不注册也不扩大任何根；
+无 root 助手、无 token 暴露、无新导入（仅新增标准库 errno）。上传区固定为
+<state>/uploads-v030，任何工具都无法把它当作项目根使用。
+
+三、本机测试（Python 3.12.15，Linux；离线，无真机、无生产 token）
+----------------------------------------------------------------
+test_package.py       Ran 18   OK
+test_safety.py        Ran 29   OK
+test_filetools.py     Ran 74   OK   （0.3.4 的 49 项 + 25 项新增）
+test_api.py           Ran 39   OK
+test_supervisor.py    Ran 10   OK
+合计 170 项全部通过，无跳过、无失败。
+
+注：五个套件中与“真实子进程/真实信号”相关的少数用例（test_safety 的 2 项 sigterm、
+test_api 的 test_real_upgrade_rollback_restart_bad_update、test_supervisor 的 2 项）在机器被
+其它任务占满时会因健康检查窗口超时而偶发失败；已确认同样的失败可在未改动的 0.3.4 原树
+（解包 0.3.4 源码包）上复现，与本版改动无关；安静环境下重复运行均通过。
+
+新增 25 项分布：
+  Mkdir 6 项       单级创建/默认 0700；parents=false 缺父目录拒绝；parents=true 逐段创建；
+                   叶子已存在且区分 dir 与 file(symlink)；mode 生效与越界拒绝；穿越/绝对路径/
+                   私密状态/符号链接父组件拒绝。
+  Uploads 13 项    多分片重组后提交字节与 sha 完全一致；expected_sha256 不匹配时目标保持原样；
+                   已存在且未 overwrite 拒绝、目录拒绝；提交失败（安装失败／跨设备回退复制失败）
+                   绝不暴露半成品且不留临时文件；abort 清理暂存且 id 不可复用；提交后 id 不可复用；
+                   并发上限 4；总量上限（含跨上传累计）；偏移与 CAS 规则；提交期路径与私密状态拒绝；
+                   提交不创建父目录；暂存不可见/不可达；过期清扫有界且只动上传区；
+                   begin 返回的元信息。
+  PrivateState 3 项  mkdir 与提交都拒绝 .bridge-state（含符号链接别名路径）；
+                     提交被拒后暂存仍可用、token 不变；暂存搜索不可见。
+  LegacyListdir 1 项  新的目录列举在“3.9 语义”（把 os.listdir 打桩为列举后关闭描述符）下仍工作：
+                     begin 的清扫+清点、commit、abort、mkdir 全链路通过。该用例已用“把 list_names
+                     换回 os.listdir”的反向注入验证过——会以 EBADF 失败，其它 4 项仍通过。
+
+四、构建
+--------
+package_lifecycle.py VERSION = '0.3.5-1+experimental'；build.py 连续两次构建字节一致。
+deb: OpenMinis-Jailbreak_0.3.5-1+experimental_iphoneos-arm64e.deb
+     sha256 584a5a49dc950762c710b09f4085a29e51138033da604981194c274531627bd1
+源码包: OpenMinis-Jailbreak_0.3.5-1+experimental-source.tar.gz（前缀 openminis-jb/，与 0.3.4 同法生成）
+先 20 个工具的名字、顺序与 inputSchema 完全未变（registry 断言逐项比对），仅追加 5 个。
+
+五、尚未验证
+------------
+- 真机未验证：本机测试运行于 Python 3.12，Python 3.9 仅做 AST 语法解析；3.9 的 listdir 语义用
+  打桩模拟而非真机。设备健康检查只调用 jb_device_info 与 jb_maintenance_info，**不会**跑到本版
+  新工具，因此新工具若在 3.9 上有其它环境差异不会被自动回退捕获。
+- 跨文件系统（EXDEV）回退路径无法在本机自然触发，只有模拟触发；真机上暂存区与项目同卷时走
+  单次 os.replace 的快路径。
+- 未做压力验收：4 个并发上传的长时间并行、256 MiB 总量上限、扫地（stale sweep）在真机大目录上的
+  耗时都只做了逻辑级验证。
+- 掉电/崩溃后的持久性只做到 fsync 尽力而为，未做断电注入。
+- 安装包 0.3.5-1 本身未做卸载/重装验收（部署走自更新通道 stage/validate/apply）。
+
+六、真机验收（主代理补测，iPhone15,3 / iOS 16.4.1 / Python 3.9.9）
+------------------------------------------------------------------
+部署：经自更新通道 jb_apply_update 切换，约 3 秒，active=dfa21e1a…（前一本 ec7d5775…／4bffa899…），
+      supervisor healthy，未重装、未更换 Token。
+
+工具数：25（MCP 实测）。
+
+jb_mkdir（全部通过）：
+  单层创建 mode 0o700；parents=true 建链 a/b/c 每层 0o755；
+  已存在目录、父目录缺失、.bridge-state 目标、非法 mode(7777) 均被拒绝。
+
+分块上传（全部通过）：
+  jb_upload_chunk 写入 153600 字节，返回整文件哈希一致；
+  提交时给定错误 expected_sha256 → 拒绝，且目标文件确实不存在（旧文件/目标未被创建）；
+  正确哈希提交 → committed, install=moved, atomic=true, fsynced=true, staging_removed=true, consumed=true；
+  落地文件哈希与字节数一致；
+  已消费的 upload_id 再次提交被拒；jb_upload_abort 清除暂存且该 id 不可再用。
+  注：跨文件系统（EXDEV）回退路径在真机未触发（暂存区与项目同卷），走的是单次 os.replace 快路径。
+
+七、性能观测（重要，避免误判）
+------------------------------
+- 裸 HTTP 往返（POST /mcp，不带认证）：0.003–0.037 秒 —— 桥接本身极快。
+- minis-mcp-cli 单次调用：5–45 秒 —— 全部开销在客户端（在 iSH 中启动 Python 并走 IPC）。
+- 因此“分块上传 512 KiB 耗时 248 秒”是 16 次客户端调用开销之和，与文件大小、哈希无关；
+  同一文件上的 stat/读/写耗时与小区块文件相同。OpenMinis 自身使用常驻 MCP 连接，无此开销。
+  （此前把该现象误判为 O(n²) 哈希缺陷，实为客户端开销，特此更正。）
+
+八、实测中确认的其它边界
+------------------------
+- 500 个文件：列目录分页 total=500/returned=100/has_more=true；搜索 limit=10 → truncated=true, reasons=['limit']；
+  内容搜索按子串匹配（'line 42' 命中 11 处含 420–429）；递归删除 502 项计数准确。
+- 单块超过 262144 字节被拒绝（实测触发）。
+- 偏移越界、CAS 不匹配、递归删除缺确认、路径穿越、.bridge-state 访问均被拒绝。

@@ -76,6 +76,11 @@ bridge.py（mobile，UID 501）
 | `jb_read_chunk` | 分片读取（base64 + 整文件 sha256 + eof） | ⚠️ 0.3.4 新增，未真机验证 |
 | `jb_write_chunk` | 按偏移分片写入，可选 SHA256 比较并交换、truncate、fsync | ⚠️ 0.3.4 新增，未真机验证 |
 | `jb_projects` | 只读列出已配置项目根及其存在性 | ⚠️ 0.3.4 新增，未真机验证 |
+| `jb_mkdir` | 在项目根内建目录（`parents` 逐段创建；`mode` 仅 0700..0777） | ⚠️ 0.3.5 新增，未真机验证 |
+| `jb_upload_begin` | 开启暂存式分块上传，返回不透明 `upload_id` | ⚠️ 0.3.5 新增，未真机验证 |
+| `jb_upload_chunk` | 按偏移写暂存数据（规则同 `jb_write_chunk`） | ⚠️ 0.3.5 新增，未真机验证 |
+| `jb_upload_commit` | 校验后用一次 `os.replace` **原子**就位 | ⚠️ 0.3.5 新增，未真机验证 |
+| `jb_upload_abort` | 丢弃暂存并作废 `upload_id`（幂等） | ⚠️ 0.3.5 新增，未真机验证 |
 
 ## 安全边界（务必阅读）
 
@@ -114,10 +119,34 @@ python3 test_api.py
 
 1. **安装后完整重启、重新越狱的自动恢复未验证。**
 2. 自身更新链路已在真机演练通过（上传/校验/切换/回退/坏版本自动回退）。
-3. 文件接口**不能创建目录**：父目录必须已存在，需要建目录时用 `jb_exec`。
+3. 文件写入接口**不会创建父目录**：`jb_write_file` / `jb_rename` / `jb_upload_commit` 都要求父目录已存在；
+   需要建目录时用 `jb_mkdir`（`parents=true` 逐段创建，`mode` 只接受 0700..0777）。
 3. 文件接口不能写入项目根目录之外；这是有意限制。
 4. `jb_device_info` 的 `ios` 字段依赖 `/System/Library/CoreServices/SystemVersion.plist`；
    读取失败时该字段为 `null`，`release`（内核版本）仍在，但它**不能用来推断 iOS 版本**。
+
+### 新增（0.3.5）
+
+新增 5 个工具：`jb_mkdir` 与暂存式分块上传四件套（`jb_upload_begin` /
+`jb_upload_chunk` / `jb_upload_commit` / `jb_upload_abort`），共 25 个工具，MCP API 仍为 3。
+
+- `jb_mkdir(project, path, parents=false, mode="0700")`：只建**一级**目录（`parents=true` 才逐段创建），
+  `path` 必须是项目根内的相对路径，绝对路径、空组件、`.`、`..`、`.bridge-state` 与任何符号链接组件一律拒绝；
+  缺父目录且 `parents=false` 直接拒绝；叶子已存在时拒绝并在错误文本里说明是目录／文件／符号链接；
+  `mode` 只接受 0700..0777 的八进制字符串（含特权的位一律拒绝），并在收紧的 umask 下创建后用
+  `fchmod` 精确设定，结果**不会**超出请求的 mode。
+- 暂存数据位于私有状态目录内的 `uploads-v030/`，文件工具按名字与 inode 双重拒绝该目录，因此
+  **提交前项目里看不到任何东西**。同时在跑的暂存上传上限 4 个、暂存总量上限 256 MiB；
+  进程中途死亡只会留下无用的暂存数据，只由有界的过期清扫（默认 1 小时、每次最多检查 64 项／删除 16 项，
+  且只动上传区内形如本版 id 的目录）或显式 `jb_upload_abort` 清除。
+- `jb_upload_commit` 是 `jb_write_chunk` 多分片写入的**原子替代**：多分片写入本身不是原子的，
+  而 commit 先按 `expected_sha256`（如提供）校验装配结果，再用**一次 `os.replace`**（锚定目标 dirfd）
+  让目标名字要么是旧文件、要么是完整新文件，绝无半成品；跨文件系统（EXDEV）时退化为
+  在目标目录内写临时文件后 `os.replace`，失败路径必定删除临时文件。目标已存在且 `overwrite!=true`
+  时拒绝、目录／符号链接／非 mobile 所有或硬链接的目标一律拒绝、`.bridge-state` 一律拒绝。
+  commit 成功或 abort 后该 `upload_id` 即作废，不可复用；被拒绝的 commit 不改动目标、也保留暂存（可重试）。
+- 本版仍只改移动端 `bridge.py`＋测试与文档，可经自身更新链路（stage/validate/apply）下发，无需重装；
+  `maintenance_runtime.py` 与 `launcher.py` 与 0.3.4 逐字节相同，未变。
 
 ### 新增（0.3.4）
 

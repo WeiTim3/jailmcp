@@ -34,7 +34,7 @@ jobs:
           V=$(python3 -c "import package_lifecycle as l; print(l.VERSION)")
           tar czf "OpenMinis-Jailbreak_${V}-source.tar.gz" \
             build.py package_lifecycle.py removal_helper.py mobile_setup.py \
-            README.md README.zh-CN.md TEST_REPORT_0342.txt \
+            README.md README.zh-CN.md TEST_REPORT_0345.txt \
             test_package.py test_safety.py test_filetools.py test_supervisor.py test_api.py run_baseline_api_tests.py \
             source-v030
           ls -l OpenMinis-Jailbreak_*.deb "OpenMinis-Jailbreak_${V}-source.tar.gz"
@@ -79,7 +79,7 @@ jobs:
           V=$(python3 -c "import package_lifecycle as l; print(l.VERSION)")
           tar czf "OpenMinis-Jailbreak_${V}-source.tar.gz" \
             build.py package_lifecycle.py removal_helper.py mobile_setup.py \
-            README.md README.zh-CN.md TEST_REPORT_0342.txt \
+            README.md README.zh-CN.md TEST_REPORT_0345.txt \
             test_package.py test_safety.py test_filetools.py test_supervisor.py test_api.py run_baseline_api_tests.py \
             source-v030
       - name: Publish release assets

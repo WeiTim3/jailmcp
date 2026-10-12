@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """v0.3 authenticated localhost MCP bridge. Mobile authority, NOT a sandbox."""
 import base64
+import errno
 import fnmatch
 import hashlib
 import hmac
@@ -14,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 import maintenance_runtime as rt
 
-VERSION = '0.3.4'
+VERSION = '0.3.5'
 # One full 262144-byte chunk is ~349528 base64 characters; the transport limit
 # must cover that plus the JSON envelope so jb_write_chunk can accept MAX_CHUNK.
 MAX_BODY = 400000
@@ -102,6 +103,18 @@ tool('jb_write_chunk', 'Write base64 at an offset, creating the file if absent. 
           expected_sha256=SHA, truncate=BOOL, final=BOOL),
      ('project', 'path', 'offset', 'data_base64'))
 tool('jb_projects', 'Configured project roots with current existence/directory status. Read-only: no tool can add or widen roots.')
+tool('jb_mkdir', 'Create ONE directory inside a project root through the same dirfd + O_NOFOLLOW traversal as the other file tools: no absolute path, no empty/. /.. component, no symlinked component, never the private state directory. parents=false requires the parent to exist; parents=true creates missing components one at a time, each reopened with O_NOFOLLOW. mode is an octal string 0700..0777 (privileged bits refused) applied under a restrictive umask so the result can never exceed it. An existing leaf is refused and reported as a directory, file, symlink or other.',
+     dict(FILE, parents=BOOL, mode=STRING), ('project', 'path'))
+tool('jb_upload_begin', 'Open a staged multi-chunk upload under the private state directory (never reachable through the file tools, so it does not pollute the project) and return an opaque upload_id. At most 4 concurrent uploads and 256 MiB staged in total in this build; stale staging is only ever removed by a bounded sweep of the upload area. Nothing becomes visible in a project until jb_upload_commit, which is the ATOMIC alternative to multi-call jb_write_chunk (that path is not atomic).',
+     {'project': STRING, 'name': STRING})
+tool('jb_upload_chunk', 'Write base64 at an offset inside a staged upload with the same offset and compare-and-swap semantics as jb_write_chunk: an offset past the staged end is refused, expected_sha256 compare-and-swaps the whole staged content when supplied, and the reply carries the bytes written plus the whole-staged sha256 and size. Nothing is visible in the project.',
+     {'upload_id': STRING, 'offset': {'type': 'integer', 'minimum': 0}, 'data_base64': STRING,
+      'expected_sha256': SHA}, ('upload_id', 'offset', 'data_base64'))
+tool('jb_upload_commit', 'Verify the assembled upload (against expected_sha256 when supplied) and install it at project/path with ONE os.replace anchored on the destination dirfd, so the name holds either the old file or the complete new data and never a partial write. Refuses an existing destination unless overwrite=true, never replaces a directory, a symlink or a foreign/hardlinked file, refuses the private state directory, and removes the staging so the id cannot be reused. A refused commit changes nothing.',
+     {'upload_id': STRING, 'project': STRING, 'path': STRING, 'expected_sha256': SHA,
+      'overwrite': BOOL}, ('upload_id', 'project', 'path'))
+tool('jb_upload_abort', 'Discard a staged upload and its idempotent opaque id; the id can never be reused afterwards and only the upload area is touched.',
+     {'upload_id': STRING}, ('upload_id',))
 
 SPEC = {x['name']: x['inputSchema'] for x in TOOLS}
 
@@ -134,12 +147,26 @@ def enqueue(target):
 
 
 # ---------------------------------------------------------------------------
-# 0.3.4 file interface. Every path goes through rt.target / rt.project_fd, i.e.
+# 0.3.5 file interface. Every path goes through rt.target / rt.project_fd, i.e.
 # the same dirfd + O_NOFOLLOW per-component traversal the 0.3.x file tools use:
 # no absolute paths, no empty/. /.. components, no symlinked component, and the
 # private state directory is refused by name everywhere. Nothing below resolves
 # a path twice, follows a link, or leaves a project root.
+# 0.3.5 adds jb_mkdir and the staged-upload quartet (jb_upload_begin,
+# jb_upload_chunk, jb_upload_commit, jb_upload_abort). Staging lives in
+# <state>/uploads-v030, which the traversal above can never reach.
 PRIVATE = '.bridge-state'        # the component name rt.target already refuses
+UPLOAD_DIR = 'uploads-v030'      # staging area, INSIDE the private state dir
+UPLOAD_ID_BYTES = 16             # upload ids are 32 hex characters
+MAX_UPLOADS = 4                  # concurrent staged uploads
+MAX_UPLOAD_TOTAL = 268435456     # 256 MiB staged in total across all uploads
+UPLOAD_STALE_SECONDS = 3600      # untouched for this long, staging may be swept
+UPLOAD_SWEEP_ENTRIES = 64        # entries examined by one sweep
+UPLOAD_SWEEP_REMOVALS = 16       # entries removed by one sweep
+UPLOAD_STAGE_FILES = ('data', 'meta.json')
+UPLOAD_TEMP_PREFIX = '.v030-upload-'
+MKDIR_MIN, MKDIR_MAX = 0o700, 0o777   # allowed jb_mkdir mode range
+MAX_PATH = 4096
 MAX_LIST = 1000                  # jb_list_dir entries per page
 MAX_CHUNK = 262144               # jb_read_chunk / jb_write_chunk payload bytes
 MAX_CHUNK_B64 = 349528           # base64 length of MAX_CHUNK
@@ -534,10 +561,401 @@ def projects_info():
             'max_file_bytes': rt.MAX_FILE,
             'note': 'Read-only view; roots are configured on the device, not by tools.'}
 
+def relative_parts(path):
+    """Project-relative components under exactly the rules rt.target applies."""
+    if (not isinstance(path, str) or not path or len(path) > MAX_PATH or
+            path.startswith('/') or '\x00' in path or
+            any(part in ('', '.', '..', PRIVATE) for part in path.split('/'))):
+        raise ValueError('Invalid relative path')
+    return path.split('/')
+
+def same_private(fd):
+    """True when an already-opened descriptor IS the private state directory."""
+    identity = state_identity()
+    if identity is None: return False
+    value = os.fstat(fd)
+    return (value.st_dev, value.st_ino) == identity
+
+def parse_mode(value):
+    """Octal string limited to 0700..0777; privileged bits are refused outright."""
+    if not isinstance(value, str) or not 3 <= len(value) <= 4:
+        raise ValueError('Invalid mode string')
+    if len(value) == 4 and value[0] != '0':
+        raise ValueError('Invalid mode string')
+    digits = value[1:] if len(value) == 4 else value
+    if any(character not in '01234567' for character in digits):
+        raise ValueError('Invalid mode string')
+    mode = int(digits, 8)
+    if mode & 0o7000: raise ValueError('Privileged mode bits refused')
+    if not MKDIR_MIN <= mode <= MKDIR_MAX: raise ValueError('Mode outside 0700-0777')
+    return mode
+
+def mkdir_at(parent, leaf, mode):
+    """Create one component under a restrictive umask, then pin the mode exactly.
+
+    os.mkdir applies the process umask, so the directory is born no wider than
+    `mode` (the umask is tightened to 0o077 for the call and always restored).
+    The new directory is reopened with O_NOFOLLOW and its mode is pinned to the
+    requested value through that descriptor, so nothing can be substituted
+    between creation and the mode fix, and the result never exceeds `mode`.
+    """
+    previous = os.umask(0o077)
+    try:
+        os.mkdir(leaf, mode, dir_fd=parent)
+    finally:
+        os.umask(previous)
+    child = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    try:
+        st = os.fstat(child)
+        actual = stat.S_IMODE(st.st_mode)
+        if st.st_uid != os.geteuid() or actual & ~mode:
+            raise ValueError('Unsafe directory')
+        if actual != mode: os.fchmod(child, mode)
+    finally:
+        os.close(child)
+
+def tool_mkdir(args):
+    parents = args.get('parents', False)
+    mode = parse_mode(args.get('mode', '0700'))
+    parts = relative_parts(args['path'])
+    leaf = parts[-1]
+    if leaf == PRIVATE: raise ValueError('Private state')
+    made = []
+    fd = rt.project_fd(args['project'])
+    try:
+        for part in parts[:-1]:
+            if part == PRIVATE: raise ValueError('Private state')
+            try:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except FileNotFoundError:
+                if parents is not True: raise ValueError('Parent directory does not exist')
+                mkdir_at(fd, part, mode)
+                made.append(part)
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except NotADirectoryError as error:
+                raise ValueError('Parent component is not a directory') from error
+            if same_private(child):
+                os.close(child); raise ValueError('Private state')
+            os.close(fd); fd = child
+        try:
+            existing = os.stat(leaf, dir_fd=fd, follow_symlinks=False)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None:
+            # The refusal names the kind so the caller can tell a duplicate
+            # directory from a file, symlink or device that blocks the name.
+            raise ValueError('Path already exists as a %s' % kind_of(existing.st_mode))
+        mkdir_at(fd, leaf, mode)
+        made.append(leaf)
+        created = os.stat(leaf, dir_fd=fd, follow_symlinks=False)
+        actual_mode = oct(stat.S_IMODE(created.st_mode))
+    finally:
+        os.close(fd)
+    return {'created': True, 'project': args['project'], 'path': args['path'],
+            'name': leaf, 'type': 'dir', 'mode': actual_mode,
+            'requested_mode': oct(mode), 'parents': parents is True,
+            'created_components': made, 'created_directories': len(made)}
+
+def is_upload_id(value):
+    return (isinstance(value, str) and len(value) == 2 * UPLOAD_ID_BYTES and
+            all(character in '0123456789abcdef' for character in value))
+
+def valid_upload_id(value):
+    if not is_upload_id(value): raise ValueError('Invalid upload id')
+    return value
+
+def uploads_area(fd, create=False):
+    try: return rt.subdir(fd, UPLOAD_DIR, create)
+    except FileNotFoundError:
+        raise ValueError('No staging area')
+
+def open_upload(uploads, upload_id):
+    valid_upload_id(upload_id)
+    try: return rt.subdir(uploads, upload_id)
+    except FileNotFoundError:
+        raise ValueError('Unknown or consumed upload id')
+
+def staged_size(up):
+    try: st = os.stat('data', dir_fd=up, follow_symlinks=False)
+    except OSError: return 0
+    return st.st_size if stat.S_ISREG(st.st_mode) else 0
+
+def upload_names(uploads):
+    """Names directly inside the upload area that are shaped like OUR ids."""
+    return [name for name in list_names(uploads) if is_upload_id(name)]
+
+def open_upload_ro(uploads, name):
+    try: return rt.subdir(uploads, name)
+    except (OSError, ValueError): return None
+
+def staged_total(uploads, names):
+    total = 0
+    for name in names:
+        up = open_upload_ro(uploads, name)
+        if up is None: continue
+        try:
+            if os.fstat(up).st_uid == os.geteuid(): total += staged_size(up)
+        finally:
+            os.close(up)
+    return total
+
+def newest_mtime(up):
+    """Newest of the directory, the staged bytes and the metadata: an upload that
+    is still being written therefore never looks stale."""
+    values = []
+    for name in (None,) + UPLOAD_STAGE_FILES:
+        try:
+            value = os.fstat(up) if name is None else os.stat(name, dir_fd=up,
+                                                             follow_symlinks=False)
+            values.append(value.st_mtime)
+        except OSError:
+            continue
+    return max(values) if values else 0.0
+
+def destroy_staging(uploads, upload_id):
+    """Delete the staged bytes and unpublish the id. Bounded: it only ever looks
+    at entries directly inside one upload directory and only unlinks the fixed
+    staging names plus this build's temporary prefix. If anything unexpected
+    survives the directory cannot be removed, so the id is renamed out of the id
+    namespace instead: either way it can never be reused.
+    """
+    up = open_upload_ro(uploads, upload_id)
+    if up is None: return False
+    try:
+        for index, name in enumerate(list_names(up)):
+            if index >= UPLOAD_SWEEP_ENTRIES: break
+            if name in UPLOAD_STAGE_FILES or name.startswith(UPLOAD_TEMP_PREFIX):
+                try: os.unlink(name, dir_fd=up)
+                except OSError: pass
+    finally:
+        os.close(up)
+    try:
+        os.rmdir(upload_id, dir_fd=uploads)
+        return True
+    except OSError:
+        try: os.rename(upload_id, 'dead-' + upload_id, src_dir_fd=uploads, dst_dir_fd=uploads)
+        except OSError: pass
+        return False
+
+def sweep_uploads(uploads, now=None):
+    """Bounded removal of stale staging. Only entries directly inside the upload
+    area whose name is one of our ids, are directories we own and look untouched
+    for UPLOAD_STALE_SECONDS are considered, so the sweep can never reach outside
+    the upload area. Staging left behind by a killed process is harmless: it is
+    only ever removed here (or by an explicit abort)."""
+    now = time.time() if now is None else now
+    removed = 0
+    for index, name in enumerate(list_names(uploads)):
+        if index >= UPLOAD_SWEEP_ENTRIES or removed >= UPLOAD_SWEEP_REMOVALS: break
+        if not is_upload_id(name): continue
+        up = open_upload_ro(uploads, name)
+        if up is None: continue
+        try:
+            if os.fstat(up).st_uid != os.geteuid(): continue
+            age = now - newest_mtime(up)
+        finally:
+            os.close(up)
+        if age < UPLOAD_STALE_SECONDS: continue
+        destroy_staging(uploads, name)
+        removed += 1
+    return removed
+
+def new_upload_id(uploads, names):
+    for _ in range(16):
+        candidate = os.urandom(UPLOAD_ID_BYTES).hex()
+        if candidate in names: continue
+        try: os.stat(candidate, dir_fd=uploads, follow_symlinks=False)
+        except FileNotFoundError: return candidate
+    raise ValueError('Could not allocate an upload id')
+
+def tool_upload_begin(args):
+    project = args.get('project', '')
+    name = args.get('name', '')
+    if not isinstance(project, str) or (project and project not in rt.config()['projects']):
+        raise ValueError('Project not allowed')
+    if not isinstance(name, str) or len(name) > 128 or '/' in name or '\x00' in name:
+        raise ValueError('Invalid name')
+    with rt.state() as fd:
+        uploads = uploads_area(fd, True)
+        try:
+            swept = sweep_uploads(uploads)
+            names = upload_names(uploads)
+            if len(names) >= MAX_UPLOADS: raise ValueError('Too many concurrent uploads')
+            if staged_total(uploads, names) >= MAX_UPLOAD_TOTAL:
+                raise ValueError('Staging area full')
+            upload_id = new_upload_id(uploads, names)
+            os.mkdir(upload_id, 0o700, dir_fd=uploads)
+            up = rt.subdir(uploads, upload_id)
+            try:
+                handle = os.open('data', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                 0o600, dir_fd=up)
+                os.close(handle)
+                rt.write_at(up, 'meta.json', json.dumps(
+                    {'upload_id': upload_id, 'project': project, 'name': name,
+                     'created': int(time.time()), 'staged_bytes': 0}).encode())
+            finally:
+                os.close(up)
+            open_count = len(names) + 1
+            used = staged_total(uploads, upload_names(uploads))
+        finally:
+            os.close(uploads)
+    return {'upload_id': upload_id, 'staged': 0, 'sha256': hashlib.sha256(b'').hexdigest(),
+            'open_uploads': open_count, 'concurrent_limit': MAX_UPLOADS,
+            'staged_total': used, 'total_limit': MAX_UPLOAD_TOTAL,
+            'swept_stale': swept, 'visible_in_project': False,
+            'note': 'Stage with jb_upload_chunk, then jb_upload_commit installs the '
+                    'whole file with one os.replace (atomic).'}
+
+def tool_upload_chunk(args):
+    upload_id = valid_upload_id(args['upload_id'])
+    offset = args['offset']; expected = args.get('expected_sha256', '')
+    data = decode_chunk(args['data_base64'])
+    if not 0 <= offset <= MAX_OFFSET: raise ValueError('Invalid offset')
+    if offset + len(data) > MAX_UPLOAD_TOTAL: raise ValueError('Size limit exceeded')
+    with rt.state() as fd:
+        uploads = uploads_area(fd)
+        try:
+            up = open_upload(uploads, upload_id)
+            try:
+                current = staged_size(up)
+                total = staged_total(uploads, upload_names(uploads))
+                if expected:
+                    # Same compare-and-swap rule as jb_write_chunk: the whole
+                    # staged content is checked before anything is written.
+                    rt.valid_sha(expected)
+                    if hash_leaf(up, 'data')[0] != expected:
+                        raise ValueError('Concurrent modification')
+                if offset > current: raise ValueError('Offset beyond end of file')
+                if total - current + offset + len(data) > MAX_UPLOAD_TOTAL:
+                    raise ValueError('Size limit exceeded')
+                handle = os.open('data', os.O_WRONLY | os.O_NOFOLLOW, dir_fd=up)
+                try:
+                    opened = os.fstat(handle)
+                    if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
+                            or opened.st_uid != os.geteuid()):
+                        raise ValueError('Unsafe staging')
+                    os.lseek(handle, offset, os.SEEK_SET)
+                    written = 0
+                    while written < len(data):
+                        written += os.write(handle, data[written:])
+                    os.fsync(handle)
+                finally:
+                    os.close(handle)
+                sha, size = hash_leaf(up, 'data')
+            finally:
+                os.close(up)
+        finally:
+            os.close(uploads)
+    return {'upload_id': upload_id, 'written': len(data), 'offset': offset,
+            'sha256': sha, 'size': size, 'synced': True, 'cas_checked': bool(expected),
+            'visible_in_project': False, 'atomic': False,
+            'note': 'Staged only; jb_upload_commit installs the whole file atomically.'}
+
+def install_staged(up, parent, leaf):
+    """Install the staged bytes under the destination dirfd.
+
+    The normal path is ONE os.replace, which makes the destination name hold
+    either the old file or the complete new file, never a partial one. When the
+    staging area and the project are on different filesystems (EXDEV) the bytes
+    are copied into a private temporary file in the DESTINATION directory, which
+    is fsynced and then os.replace'd in: the destination is likewise never
+    partial, and the temporary file is removed on every failure path.
+    """
+    try:
+        os.replace('data', leaf, src_dir_fd=up, dst_dir_fd=parent)
+        return 'moved'
+    except OSError as error:
+        if error.errno != errno.EXDEV: raise
+    temp = UPLOAD_TEMP_PREFIX + os.urandom(12).hex()
+    source = os.open('data', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=up)
+    try:
+        st = os.fstat(source)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != os.geteuid():
+            raise ValueError('Unsafe staging')
+        handle = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=parent)
+        try:
+            while True:
+                block = os.read(source, 1048576)
+                if not block: break
+                written = 0
+                while written < len(block):
+                    written += os.write(handle, block[written:])
+            os.fsync(handle)
+        finally:
+            os.close(handle)
+        os.replace(temp, leaf, src_dir_fd=parent, dst_dir_fd=parent)
+    finally:
+        try: os.unlink(temp, dir_fd=parent)
+        except FileNotFoundError: pass
+        os.close(source)
+    return 'copied'
+
+def tool_upload_commit(args):
+    upload_id = valid_upload_id(args['upload_id'])
+    expected = args.get('expected_sha256', '')
+    overwrite = args.get('overwrite', False)
+    parts = relative_parts(args['path'])
+    if parts[-1] == PRIVATE: raise ValueError('Private state')
+    if expected: rt.valid_sha(expected)
+    replaced = False
+    with rt.state() as state_fd:
+        uploads = uploads_area(state_fd)
+        up = open_upload(uploads, upload_id)
+        try:
+            try: sha, size = hash_leaf(up, 'data')
+            except FileNotFoundError:
+                raise ValueError('Unknown or consumed upload id')
+            if expected and sha != expected:
+                # Nothing outside the staging area is touched on a mismatch.
+                raise ValueError('Assembled hash mismatch')
+            with rt.target(args['project'], args['path']) as (parent, leaf):
+                if leaf == PRIVATE or same_private(parent): raise ValueError('Private state')
+                try: existing = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError: existing = None
+                if existing is not None:
+                    if stat.S_ISDIR(existing.st_mode):
+                        raise ValueError('Refusing to replace a directory')
+                    if overwrite is not True:
+                        raise ValueError('Destination exists; overwrite required')
+                    if (not stat.S_ISREG(existing.st_mode) or existing.st_nlink != 1
+                            or existing.st_uid != os.geteuid()):
+                        raise ValueError('Unsafe destination')
+                    replaced = True
+                install = install_staged(up, parent, leaf)
+                os.fsync(parent)
+        finally:
+            os.close(up)
+        removed = destroy_staging(uploads, upload_id)
+    return {'committed': True, 'upload_id': upload_id, 'project': args['project'],
+            'path': args['path'], 'sha256': sha, 'size': size, 'bytes': size,
+            'replaced': replaced, 'install': install, 'atomic': True, 'fsynced': True,
+            'staging_removed': removed,
+            'atomic_scope': 'The destination NAME is switched by one os.replace inside '
+                            'the destination dirfd: a concurrent reader sees either the '
+                            'old file or the complete new file. Durability of that name '
+                            'is fsynced too.',
+            'consumed': True}
+
+def tool_upload_abort(args):
+    upload_id = valid_upload_id(args['upload_id'])
+    with rt.state() as state_fd:
+        try: uploads = uploads_area(state_fd)
+        except ValueError:
+            return {'aborted': True, 'upload_id': upload_id, 'removed': False,
+                    'staging_area': 'absent'}
+        try: removed = destroy_staging(uploads, upload_id)
+        finally: os.close(uploads)
+    return {'aborted': True, 'upload_id': upload_id, 'removed': removed,
+            'staging_area': 'present', 'reusable': False}
+
 FILE_OPERATIONS = {
     'jb_list_dir': tool_list_dir, 'jb_stat': tool_stat, 'jb_delete': tool_delete,
     'jb_rename': tool_rename, 'jb_search': tool_search,
     'jb_read_chunk': tool_read_chunk, 'jb_write_chunk': tool_write_chunk,
+    'jb_mkdir': tool_mkdir, 'jb_upload_begin': tool_upload_begin,
+    'jb_upload_chunk': tool_upload_chunk, 'jb_upload_commit': tool_upload_commit,
+    'jb_upload_abort': tool_upload_abort,
 }
 
 

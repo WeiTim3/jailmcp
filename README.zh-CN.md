@@ -1,9 +1,23 @@
-# OpenMinis-Jailbreak 0.3.4-1+experimental
+# OpenMinis-Jailbreak 0.3.5-1+experimental
 
 以 launchd 服务形式运行、并通过本机 MCP 向 OpenMinis 提供越狱侧能力的服务包。
 OpenMinis 本体不需要越狱权限、不需要注入。
 
-## 本版改动
+## 本版改动（0.3.5）
+
+1. **新增 `jb_mkdir`**：只建一级目录（`parents=true` 才逐段创建），路径规则与其它文件工具一致
+   （项目根内相对路径、逐段 `O_NOFOLLOW`、`.bridge-state` 拒绝）；叶子已存在时拒绝并说明是目录／文件／符号链接；
+   `mode` 只接受 0700..0777，在收紧 umask 下创建再精确设权，结果不会超出请求的 mode。
+2. **新增暂存式原子分块上传**：`jb_upload_begin` / `jb_upload_chunk` / `jb_upload_commit` / `jb_upload_abort`。
+   暂存数据放在私有状态目录的 `uploads-v030/`，文件工具无法到达，提交前项目里不可见；
+   并发上传上限 4、暂存总量上限 256 MiB，过期暂存仅由有界清扫或显式 abort 处理。
+   `jb_upload_commit` 校验装配哈希后用**一次 `os.replace`** 就位，目标要么是旧文件要么是完整新文件，
+   绝无半成品；`jb_write_chunk` 的多分片写入**不是**原子操作，这里是其原子替代。
+   目标已存在且未 `overwrite=true`、目标是目录／符号链接／硬链接、目标是 `.bridge-state` 时一律拒绝。
+3. 本版共 25 个工具（原有 20 个的行为与 schema 完全不变），MCP API 仍为 `3`；
+   仍只修改移动端 `bridge.py`＋测试与文档，`maintenance_runtime.py` 与 `launcher.py` 未变，可经自身更新链路下发。
+
+## 历史改动（0.3.4）
 
 1. **新增 8 个文件接口工具**：`jb_list_dir`、`jb_stat`、`jb_delete`、`jb_rename`、
    `jb_search`、`jb_read_chunk`、`jb_write_chunk`、`jb_projects`。全部只接受已配置项目根
@@ -48,14 +62,14 @@ OpenMinis 侧 MCP 服务器填 `http://127.0.0.1:18765/mcp`，请求头 `Authori
 ## 版本兼容
 
 本包为 **干净安装** 语义：拒绝覆盖 dpkg 记录为“已安装”的版本。
-从旧版本迁移前请先卸载并私下备份数据。安装包版本 `0.3.4-1+experimental`，
-移动端 bridge `0.3.4`，MCP API 版本仍为 `3`。
+从旧版本迁移前请先卸载并私下备份数据。安装包版本 `0.3.5-1+experimental`，
+移动端 bridge `0.3.5`，MCP API 版本仍为 `3`。
 
 ## 工具
 
-本版共 20 个工具：原有 12 个（设备信息、进程、维护状态、读写/编辑文件、执行命令、更新与回退）
-+ 新增 8 个文件接口（列目录、元信息、删除、重命名、搜索、分块读、分块写、项目列表）。
-详见 README.md 的工具表。
+本版共 25 个工具：原有 12 个（设备信息、进程、维护状态、读写/编辑文件、执行命令、更新与回退）
++ 0.3.4 的 8 个文件接口（列目录、元信息、删除、重命名、搜索、分块读、分块写、项目列表）
++ 0.3.5 的 5 个（建目录、暂存上传 begin/chunk/commit/abort）。详见 README.md 的工具表。
 
 ## 关键修复
 
@@ -65,4 +79,4 @@ OpenMinis 侧 MCP 服务器填 `http://127.0.0.1:18765/mcp`，请求头 `Authori
 ## 未验证项
 
 安装、卸载、重启恢复与自身更新链路的真机验收尚未覆盖本版本；
-本机测试运行于 Python 3.12，Python 3.9 仅做语法解析。详见 `TEST_REPORT_0341.txt`。
+本机测试运行于 Python 3.12，Python 3.9 仅做语法解析。详见 `TEST_REPORT_0345.txt`。

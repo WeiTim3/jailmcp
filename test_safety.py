@@ -138,19 +138,35 @@ class SafetyTests(unittest.TestCase):
         self.assertIn('start_new_session=True',ast.get_source_segment(src,spawn))
 
     def test_all_tools_registered(self):
-        # 0.3.3 shipped twelve tools; 0.3.4 adds the eight file-interface tools and
-        # must not have changed, removed or reordered the existing twelve.
-        self.assertEqual(len(bridge.TOOLS),20)
+        # 0.3.3 shipped twelve tools; 0.3.4 added the eight file-interface tools;
+        # 0.3.5 appends jb_mkdir and the four staged-upload tools and must not have
+        # changed, removed or reordered anything that shipped before it.
+        self.assertEqual(len(bridge.TOOLS),25)
         self.assertEqual([tool['name'] for tool in bridge.TOOLS][:12],
                          ['jb_device_info','jb_process_list','jb_maintenance_info','jb_read_file',
                           'jb_write_file','jb_edit_file','jb_exec','jb_stage_update',
                           'jb_validate_update','jb_apply_update','jb_restart','jb_rollback'])
-        self.assertEqual([tool['name'] for tool in bridge.TOOLS][12:],
+        self.assertEqual([tool['name'] for tool in bridge.TOOLS][12:20],
                          ['jb_list_dir','jb_stat','jb_delete','jb_rename','jb_search',
                           'jb_read_chunk','jb_write_chunk','jb_projects'])
+        self.assertEqual([tool['name'] for tool in bridge.TOOLS][20:],
+                         ['jb_mkdir','jb_upload_begin','jb_upload_chunk','jb_upload_commit',
+                          'jb_upload_abort'])
         self.assertEqual(sorted(bridge.SPEC),sorted(tool['name'] for tool in bridge.TOOLS))
-        self.assertEqual(bridge.VERSION,'0.3.4')
+        for tool in bridge.TOOLS:
+            self.assertFalse(tool['inputSchema']['additionalProperties'])
+        self.assertEqual(bridge.VERSION,'0.3.5')
         self.assertEqual(rt.STATE,Path('/var/mobile/Documents/OpenMinis-Jailbreak/.bridge-state'))
+        # No new tool can widen its own roots: none takes a 'projects' argument and
+        # none reaches outside the configured roots.
+        for name in ('jb_mkdir','jb_upload_begin','jb_upload_chunk','jb_upload_commit',
+                     'jb_upload_abort'):
+            self.assertNotIn('projects',bridge.SPEC[name]['properties'])
+        source=Path(bridge.__file__).read_text()
+        self.assertIn("'api': 3",source)          # the API level is unchanged
+        block=source[source.index('# 0.3.5 file interface.'):source.index('\ndef invoke(')]
+        for forbidden in ('setuid','sudo','token','geteuid() == 0','import shutil'):
+            self.assertNotIn(forbidden,block)
 
     def test_fresh_alias_and_data_refuse_without_mutation(self):
         with documents_fixture() as d,patch.object(rm,'socket_free') as free:

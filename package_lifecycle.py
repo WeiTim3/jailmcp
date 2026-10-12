@@ -15,7 +15,7 @@ import time
 LABEL = 'app.openminis.jbbridge'
 STORE = Path('/usr/local/lib/openminis-jb')
 RECEIPT = STORE / '.clean-install-v032'
-VERSION = '0.3.4-2+experimental'
+VERSION = '0.3.5-1+experimental'
 RECEIPT_DATA = ('OpenMinis-Jailbreak clean-install ' + VERSION + '\n').encode()
 STAGE = 'dispatch'
 HELPER_TAGS = ('identity', 'documents-anchor', 'project-conflict', 'socket', 'fresh-complete', 'stopped', 'cleanup')

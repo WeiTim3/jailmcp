@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""0.3.4 file-interface tests: unittest, real temp directories, real dirfd semantics.
+"""0.3.5 file-interface tests: unittest, real temp directories, real dirfd semantics.
 
 Offline only; no production token, service or device access. Every fixture lives in a
 temporary directory and drives bridge.invoke() with the real maintenance_runtime
 anchors (only STATE and the UID assertion are substituted, as test_api does).
 """
 import base64
+import errno
 import hashlib
+import json
 import os
 from pathlib import Path
 import stat
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -578,6 +581,445 @@ class Chunks(Fixture):
                           data_base64=base64.b64encode(b'x').decode())
 
 
+class Mkdir(Fixture):
+    def test_single_level_default_mode(self):
+        result = self.call('jb_mkdir', project='main', path='one')
+        self.assertTrue(result['created'])
+        self.assertEqual(result['type'], 'dir')
+        self.assertEqual(result['name'], 'one')
+        self.assertEqual(result['created_components'], ['one'])
+        self.assertEqual(result['created_directories'], 1)
+        self.assertFalse(result['parents'])
+        self.assertEqual(result['requested_mode'], '0o700')
+        self.assertTrue((self.project / 'one').is_dir())
+        if not SHARED_METADATA:
+            self.assertEqual(result['mode'], '0o700')
+            self.assertEqual((self.project / 'one').stat().st_mode & 0o777, 0o700)
+
+    def test_parents_false_requires_an_existing_parent(self):
+        self.refused('jb_mkdir', project='main', path='missing/leaf')
+        self.assertFalse((self.project / 'missing').exists())
+        self.refused('jb_mkdir', project='main', path='a/b/c')
+        self.assertFalse((self.project / 'a').exists())
+        # An existing parent is enough; only the parent has to exist.
+        (self.project / 'have').mkdir()
+        self.assertEqual(self.call('jb_mkdir', project='main', path='have/leaf')['name'], 'leaf')
+
+    def test_parents_true_creates_the_chain_one_step_at_a_time(self):
+        result = self.call('jb_mkdir', project='main', path='a/b/c', parents=True)
+        self.assertEqual(result['created_components'], ['a', 'b', 'c'])
+        self.assertEqual(result['created_directories'], 3)
+        self.assertTrue((self.project / 'a' / 'b' / 'c').is_dir())
+        # Existing components are reused and not reported as created.
+        again = self.call('jb_mkdir', project='main', path='a/b/d', parents=True)
+        self.assertEqual(again['created_components'], ['d'])
+        # parents=True is not required to be truthful about which parts existed.
+        self.assertEqual(again['created_directories'], 1)
+
+    def test_existing_leaf_refused_and_kind_reported(self):
+        (self.project / 'adir').mkdir()
+        (self.project / 'afile').write_bytes(b'x')
+        for name, kind in (('adir', 'dir'), ('afile', 'file')):
+            with self.subTest(name=name), self.assertRaises(ValueError) as caught:
+                self.call('jb_mkdir', project='main', path=name)
+            self.assertIn('already exists as a %s' % kind, str(caught.exception))
+        if not SHARED_METADATA:
+            (self.project / 'alink').symlink_to('afile')
+            with self.assertRaises(ValueError) as caught:
+                self.call('jb_mkdir', project='main', path='alink')
+            self.assertIn('already exists as a symlink', str(caught.exception))
+            self.assertTrue((self.project / 'alink').is_symlink())
+        self.assertEqual((self.project / 'afile').read_bytes(), b'x')
+        # A missing leaf under an existing parent is created, not reported.
+        self.assertTrue(self.call('jb_mkdir', project='main', path='adir/sub')['created'])
+
+    def test_mode_applied_and_clamped(self):
+        for mode, expected in (('0700', 0o700), ('0755', 0o755), ('0750', 0o750),
+                               ('0711', 0o711), ('0777', 0o777), ('700', 0o700),
+                               ('755', 0o755)):
+            with self.subTest(mode=mode):
+                result = self.call('jb_mkdir', project='main', path='m' + mode, mode=mode)
+                self.assertEqual(result['requested_mode'], oct(expected))
+                self.assertTrue((self.project / ('m' + mode)).is_dir())
+                if not SHARED_METADATA:
+                    self.assertEqual(result['mode'], oct(expected))
+                    created = (self.project / ('m' + mode)).stat().st_mode
+                    self.assertEqual(created & 0o777, expected)
+                    self.assertFalse(created & 0o7000,
+                                     'privileged bits must never be set')
+        # Nothing outside 0700..0777, no privileged bits, no non-octal or non-string.
+        for bad in ('0600', '0700x', '0', '00', '07', '07000', '1700', '2755', '4755',
+                    '7777', '0x777', 'not-a-mode', '', ' 0700', '0700 ', 0o700, 700,
+                    True, None):
+            with self.subTest(mode=bad), self.assertRaises(ValueError):
+                self.call('jb_mkdir', project='main', path='bad', mode=bad)
+
+    def test_traversal_absolute_and_private_state_refused(self):
+        for path in ('/etc', 'etc/', '', '.', '..', '../other/x', 'a/../b', 'a//b',
+                     './a', 'a/./b', '.bridge-state', '.bridge-state/x', 'a/.bridge-state',
+                     'x/.bridge-state/y', 'a\x00b'):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                self.call('jb_mkdir', project='main', path=path)
+            with self.assertRaises(ValueError):
+                self.call('jb_mkdir', project='main', path=path, parents=True)
+        self.assertEqual(sorted(p.name for p in self.project.iterdir()), [])
+        self.refused('jb_mkdir', project='unknown', path='a')
+
+    def test_symlinked_parent_component_refused(self):
+        if SHARED_METADATA:
+            self.skipTest('Minis shared mount cannot create symlinks; plain Linux covers this')
+        outside = self.other / 'outside'
+        outside.mkdir()
+        (self.project / 'link').symlink_to(outside, target_is_directory=True)
+        self.refused('jb_mkdir', project='main', path='link/sub')
+        self.refused('jb_mkdir', project='main', path='link/sub', parents=True)
+        self.assertFalse((outside / 'sub').exists())
+        # A symlinked component in the middle is refused even when the leaf is new.
+        (self.project / 'real').mkdir()
+        (self.project / 'real' / 'inner').symlink_to(outside, target_is_directory=True)
+        self.refused('jb_mkdir', project='main', path='real/inner/leaf', parents=True)
+        self.assertFalse((outside / 'leaf').exists())
+        # A file where a directory is needed is refused, never replaced.
+        (self.project / 'plain').write_bytes(b'file')
+        with self.assertRaises((ValueError, OSError)):
+            self.call('jb_mkdir', project='main', path='plain/sub', parents=True)
+        self.assertEqual((self.project / 'plain').read_bytes(), b'file')
+
+
+class Uploads(Fixture):
+    def payload(self, size=200000):
+        return bytes(range(256)) * (size // 256) + b'z' * (size % 256)
+
+    def stage(self, data, chunks=3):
+        session = self.call('jb_upload_begin')
+        upload_id = session['upload_id']
+        step = max(1, len(data) // chunks)
+        offset = 0
+        results = []
+        for index in range(chunks):
+            piece = data[offset:offset + step] if index < chunks - 1 else data[offset:]
+            results.append(self.call('jb_upload_chunk', upload_id=upload_id, offset=offset,
+                                     data_base64=base64.b64encode(piece).decode()))
+            offset += len(piece)
+        return upload_id, results
+
+    def upload_dirs(self):
+        area = self.state / 'uploads-v030'
+        return sorted(p.name for p in area.iterdir()) if area.exists() else []
+
+    def test_multi_chunk_reassembly_then_commit_is_exact(self):
+        data = self.payload()
+        upload_id, results = self.stage(data)
+        offset = 0
+        for result in results:
+            offset += result['written']
+            self.assertEqual(result['sha256'], hashlib.sha256(data[:offset]).hexdigest())
+            self.assertEqual(result['size'], offset)
+            self.assertTrue(result['synced'])
+            self.assertFalse(result['atomic'])
+            self.assertFalse(result['visible_in_project'])
+        self.assertEqual(sorted(self.upload_dirs()), [upload_id])
+        self.assertEqual(sorted(p.name for p in self.project.iterdir()), [])
+        committed = self.call('jb_upload_commit', upload_id=upload_id, project='main',
+                              path='out.bin',
+                              expected_sha256=hashlib.sha256(data).hexdigest())
+        self.assertTrue(committed['committed'])
+        self.assertTrue(committed['atomic'])
+        self.assertTrue(committed['fsynced'])
+        self.assertFalse(committed['replaced'])
+        self.assertIn(committed['install'], ('moved', 'copied'))
+        self.assertEqual(committed['sha256'], hashlib.sha256(data).hexdigest())
+        self.assertEqual(committed['size'], len(data))
+        self.assertEqual((self.project / 'out.bin').read_bytes(), data)
+        # The id is consumed and the staging is gone.
+        self.assertEqual(self.upload_dirs(), [])
+        # The file is a normal project file for every other tool.
+        read = self.call('jb_read_chunk', project='main', path='out.bin', length=131072)
+        self.assertEqual(read['sha256'], hashlib.sha256(data).hexdigest())
+        self.assertEqual(read['total_size'], len(data))
+
+    def test_commit_hash_mismatch_leaves_destination_untouched(self):
+        self.put('dest.bin', b'ORIGINAL')
+        upload_id, _ = self.stage(b'REPLACEMENT', chunks=1)
+        self.refused('jb_upload_commit', upload_id=upload_id, project='main', path='dest.bin',
+                     expected_sha256='0' * 64, overwrite=True)
+        self.assertEqual((self.project / 'dest.bin').read_bytes(), b'ORIGINAL')
+        self.assertEqual(self.upload_dirs(), [upload_id])
+        # The staging survived a refused commit, so the correct hash still works.
+        ok = self.call('jb_upload_commit', upload_id=upload_id, project='main', path='dest.bin',
+                       expected_sha256=hashlib.sha256(b'REPLACEMENT').hexdigest(), overwrite=True)
+        self.assertTrue(ok['replaced'])
+        self.assertEqual((self.project / 'dest.bin').read_bytes(), b'REPLACEMENT')
+        # A malformed expected_sha256 is refused before anything is installed.
+        self.put('dest.bin', b'ORIGINAL')
+        upload_id, _ = self.stage(b'X', chunks=1)
+        self.refused('jb_upload_commit', upload_id=upload_id, project='main', path='dest.bin',
+                     expected_sha256='short', overwrite=True)
+        self.assertEqual((self.project / 'dest.bin').read_bytes(), b'ORIGINAL')
+
+    def test_commit_refuses_existing_without_overwrite(self):
+        self.put('dest.bin', b'ORIGINAL')
+        (self.project / 'adir').mkdir()
+        upload_id, _ = self.stage(b'NEW', chunks=1)
+        self.refused('jb_upload_commit', upload_id=upload_id, project='main', path='dest.bin')
+        self.assertEqual((self.project / 'dest.bin').read_bytes(), b'ORIGINAL')
+        # A directory is never replaced, not even with overwrite=true.
+        self.refused('jb_upload_commit', upload_id=upload_id, project='main', path='adir',
+                     overwrite=True)
+        self.assertTrue((self.project / 'adir').is_dir())
+        self.assertEqual(self.upload_dirs(), [upload_id])
+        self.assertEqual(self.call('jb_upload_commit', upload_id=upload_id, project='main',
+                                   path='dest.bin', overwrite=True)['size'], 3)
+
+    def test_commit_never_leaves_a_partial_file(self):
+        self.put('dest.bin', b'ORIGINAL')
+        upload_id, _ = self.stage(b'COMPLETE-NEW-CONTENT', chunks=1)
+        real = os.replace
+        # 1. A plain failure of the single install step: nothing is installed and
+        #    no temporary file is left next to the destination.
+        def failing(src, dst, **kwargs):
+            raise OSError(errno.EIO, 'install failed')
+        with patch.object(os, 'replace', side_effect=failing):
+            self.refused('jb_upload_commit', upload_id=upload_id, project='main',
+                         path='dest.bin', overwrite=True)
+        self.assertEqual((self.project / 'dest.bin').read_bytes(), b'ORIGINAL')
+        self.assertEqual([p.name for p in self.project.iterdir()], ['dest.bin'])
+        # 2. Cross-device rename: the copy fallback still installs the WHOLE file.
+        def cross_device(src, dst, **kwargs):
+            if src == 'data': raise OSError(errno.EXDEV, 'cross-device link')
+            return real(src, dst, **kwargs)
+        with patch.object(os, 'replace', side_effect=cross_device):
+            copied = self.call('jb_upload_commit', upload_id=upload_id, project='main',
+                               path='dest.bin', overwrite=True)
+        self.assertEqual(copied['install'], 'copied')
+        self.assertEqual((self.project / 'dest.bin').read_bytes(), b'COMPLETE-NEW-CONTENT')
+        self.assertEqual([p.name for p in self.project.iterdir()], ['dest.bin'])
+        # 3. The fallback failing after the temporary file was written: the old
+        #    content survives and the partial temporary file is removed.
+        self.put('dest.bin', b'ORIGINAL-AGAIN')
+        upload_id, _ = self.stage(b'NEVER-VISIBLE', chunks=1)
+        def broken_copy(src, dst, **kwargs):
+            if src == 'data': raise OSError(errno.EXDEV, 'cross-device link')
+            raise OSError(errno.EIO, 'temporary install failed')
+        with patch.object(os, 'replace', side_effect=broken_copy):
+            self.refused('jb_upload_commit', upload_id=upload_id, project='main',
+                         path='dest.bin', overwrite=True)
+        self.assertEqual((self.project / 'dest.bin').read_bytes(), b'ORIGINAL-AGAIN')
+        self.assertEqual([p.name for p in self.project.iterdir()], ['dest.bin'])
+
+    def test_abort_removes_staging_and_consumes_the_id(self):
+        upload_id, _ = self.stage(b'abc', chunks=1)
+        self.assertEqual(self.upload_dirs(), [upload_id])
+        aborted = self.call('jb_upload_abort', upload_id=upload_id)
+        self.assertTrue(aborted['aborted'])
+        self.assertTrue(aborted['removed'])
+        self.assertEqual(self.upload_dirs(), [])
+        self.assertEqual(sorted(p.name for p in self.project.iterdir()), [])
+        # Idempotent, and the id can never be reused.
+        again = self.call('jb_upload_abort', upload_id=upload_id)
+        self.assertTrue(again['aborted'])
+        self.assertFalse(again['removed'])
+        for call in (lambda: self.call('jb_upload_chunk', upload_id=upload_id, offset=0,
+                                       data_base64=base64.b64encode(b'x').decode()),
+                     lambda: self.call('jb_upload_commit', upload_id=upload_id,
+                                       project='main', path='x.bin')):
+            with self.assertRaises((ValueError, OSError)):
+                call()
+        self.assertFalse((self.project / 'x.bin').exists())
+
+    def test_completed_id_is_not_reusable(self):
+        upload_id, _ = self.stage(b'first', chunks=1)
+        self.call('jb_upload_commit', upload_id=upload_id, project='main', path='x.bin')
+        self.assertEqual((self.project / 'x.bin').read_bytes(), b'first')
+        for call in (lambda: self.call('jb_upload_chunk', upload_id=upload_id, offset=0,
+                                       data_base64=base64.b64encode(b'second').decode()),
+                     lambda: self.call('jb_upload_commit', upload_id=upload_id,
+                                       project='main', path='x.bin', overwrite=True)):
+            with self.assertRaises((ValueError, OSError)):
+                call()
+        self.assertEqual((self.project / 'x.bin').read_bytes(), b'first')
+
+    def test_concurrent_upload_bound(self):
+        sessions = [self.call('jb_upload_begin') for _ in range(b.MAX_UPLOADS)]
+        self.assertEqual(len({s['upload_id'] for s in sessions}), b.MAX_UPLOADS)
+        self.assertEqual(sessions[-1]['open_uploads'], b.MAX_UPLOADS)
+        self.refused('jb_upload_begin')
+        self.assertEqual(len(self.upload_dirs()), b.MAX_UPLOADS)
+        self.call('jb_upload_abort', upload_id=sessions[0]['upload_id'])
+        replacement = self.call('jb_upload_begin')
+        self.assertEqual(replacement['open_uploads'], b.MAX_UPLOADS)
+        self.assertEqual(len(self.upload_dirs()), b.MAX_UPLOADS)
+        for session in sessions[1:]:
+            self.call('jb_upload_abort', upload_id=session['upload_id'])
+        self.call('jb_upload_abort', upload_id=replacement['upload_id'])
+        self.assertEqual(self.upload_dirs(), [])
+
+    def test_total_size_cap(self):
+        with patch.object(b, 'MAX_UPLOAD_TOTAL', 10):
+            first = self.call('jb_upload_begin')['upload_id']
+            second = self.call('jb_upload_begin')['upload_id']
+            self.assertEqual(self.call('jb_upload_chunk', upload_id=first, offset=0,
+                                       data_base64=base64.b64encode(b'0123456789').decode()
+                                       )['size'], 10)
+            # The cap is area-wide: the second upload cannot push the total over it.
+            self.refused('jb_upload_chunk', upload_id=second, offset=0,
+                         data_base64=base64.b64encode(b'0123456789').decode())
+            # Nor can one upload grow past it by offset alone.
+            self.refused('jb_upload_chunk', upload_id=first, offset=10,
+                         data_base64=base64.b64encode(b'x').decode())
+            self.refused('jb_upload_chunk', upload_id=first, offset=20,
+                         data_base64=base64.b64encode(b'x').decode())
+            self.assertEqual(self.call('jb_upload_chunk', upload_id=second, offset=0,
+                                       data_base64='')['size'], 0)
+        self.assertEqual(self.call('jb_upload_commit', upload_id=first, project='main',
+                                   path='capped.bin')['size'], 10)
+
+    def test_offset_and_cas_rules(self):
+        upload_id = self.call('jb_upload_begin')['upload_id']
+        self.refused('jb_upload_chunk', upload_id=upload_id, offset=5,
+                     data_base64=base64.b64encode(b'z').decode())
+        first = self.call('jb_upload_chunk', upload_id=upload_id, offset=0,
+                          data_base64=base64.b64encode(b'abcdef').decode())
+        self.assertEqual(first['sha256'], hashlib.sha256(b'abcdef').hexdigest())
+        self.assertEqual(first['size'], 6)
+        self.assertFalse(first['cas_checked'])
+        # Compare-and-swap checks the WHOLE staged content before writing.
+        self.refused('jb_upload_chunk', upload_id=upload_id, offset=0,
+                     data_base64=base64.b64encode(b'X').decode(), expected_sha256='0' * 64)
+        self.assertEqual(self.call('jb_upload_chunk', upload_id=upload_id, offset=0,
+                                   data_base64='')['sha256'],
+                         hashlib.sha256(b'abcdef').hexdigest())
+        swapped = self.call('jb_upload_chunk', upload_id=upload_id, offset=3,
+                            data_base64=base64.b64encode(b'D').decode(),
+                            expected_sha256=hashlib.sha256(b'abcdef').hexdigest())
+        self.assertTrue(swapped['cas_checked'])
+        self.assertEqual(swapped['sha256'], hashlib.sha256(b'abcDef').hexdigest())
+        self.refused('jb_upload_chunk', upload_id=upload_id, offset=7,
+                     data_base64=base64.b64encode(b'z').decode())
+        for args in ({'offset': -1}, {'offset': 1 << 41}, {'offset': True}, {'offset': 1.0}):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                self.call('jb_upload_chunk', upload_id=upload_id, data_base64='', **args)
+        self.refused('jb_upload_chunk', upload_id=upload_id, offset=0, data_base64='not base64!!')
+        self.refused('jb_upload_chunk', upload_id=upload_id, offset=0, data_base64=1)
+        self.refused('jb_upload_chunk', upload_id=upload_id, offset=0, data_base64='',
+                     expected_sha256='short')
+        for bad in ('', 'x' * 32, ('a' * 31), ('a' * 33), ('A' * 32), ('g' * 32), 1, None):
+            with self.subTest(upload_id=bad), self.assertRaises(ValueError):
+                self.call('jb_upload_chunk', upload_id=bad, offset=0, data_base64='')
+            with self.assertRaises(ValueError):
+                self.call('jb_upload_abort', upload_id=bad)
+            with self.assertRaises(ValueError):
+                self.call('jb_upload_commit', upload_id=bad, project='main', path='x.bin')
+        # An unknown but well formed id is refused everywhere.
+        unknown = 'f' * 32
+        self.refused('jb_upload_chunk', upload_id=unknown, offset=0, data_base64='')
+        self.refused('jb_upload_commit', upload_id=unknown, project='main', path='x.bin')
+        self.assertTrue(self.call('jb_upload_abort', upload_id=unknown)['aborted'])
+
+    def test_path_and_private_state_refusals_at_commit(self):
+        upload_id, _ = self.stage(b'payload', chunks=1)
+        for path in ('/etc/hosts', '', '.', '..', '../other/x', 'a/../b', 'a//b',
+                     '.bridge-state', '.bridge-state/token', 'a/.bridge-state/x',
+                     'missing/x', 'a\x00b'):
+            with self.subTest(path=path), self.assertRaises((ValueError, OSError)):
+                self.call('jb_upload_commit', upload_id=upload_id, project='main', path=path)
+        self.refused('jb_upload_commit', upload_id=upload_id, project='unknown', path='x.bin')
+        # Nothing was created in the other project, and the staging is untouched.
+        self.assertEqual(sorted(p.name for p in self.other.iterdir()), [])
+        self.assertEqual(self.upload_dirs(), [upload_id])
+        # The staged bytes are only visible after a successful commit.
+        self.assertEqual(sorted(p.name for p in self.project.iterdir()), [])
+        result = self.call('jb_upload_commit', upload_id=upload_id, project='main', path='ok.bin')
+        self.assertIn(result['install'], ('moved', 'copied'))
+        self.assertEqual((self.project / 'ok.bin').read_bytes(), b'payload')
+        self.assertFalse((self.project / 'a').exists())
+
+    def test_commit_creates_no_parent_directory(self):
+        upload_id, _ = self.stage(b'payload', chunks=1)
+        with self.assertRaises(OSError):
+            self.call('jb_upload_commit', upload_id=upload_id, project='main', path='nope/x.bin')
+        self.assertFalse((self.project / 'nope').exists())
+        self.assertEqual(self.upload_dirs(), [upload_id])
+
+    def test_staging_is_invisible_and_unreachable(self):
+        self.put('ordinary.txt', b'ordinary')
+        upload_id, _ = self.stage(b'STAGED-SECRET', chunks=1)
+        self.assertEqual(sorted(p.name for p in self.project.iterdir()), ['ordinary.txt'])
+        listed = self.call('jb_list_dir', project='main')
+        self.assertEqual([e['name'] for e in listed['entries']], ['ordinary.txt'])
+        found = self.call('jb_search', project='main', content='STAGED-SECRET')
+        self.assertEqual(found['matches'], [])
+        for path in ('.bridge-state', '.bridge-state/uploads-v030',
+                     '.bridge-state/uploads-v030/' + upload_id,
+                     '.bridge-state/uploads-v030/' + upload_id + '/data'):
+            with self.subTest(path=path):
+                with self.assertRaises(ValueError):
+                    self.call('jb_read_chunk', project='main', path=path)
+                with self.assertRaises(ValueError):
+                    self.call('jb_stat', project='main', path=path)
+                with self.assertRaises(ValueError):
+                    self.call('jb_write_chunk', project='main', path=path, offset=0,
+                              data_base64=base64.b64encode(b'x').decode())
+                with self.assertRaises(ValueError):
+                    self.call('jb_list_dir', project='main', path=path)
+                with self.assertRaises(ValueError):
+                    self.call('jb_delete', project='main', path=path)
+        # The staging area is not a project root and no tool can widen roots.
+        self.refused('jb_upload_commit', upload_id=upload_id, project='main',
+                     path='.bridge-state/uploads-v030/' + upload_id + '/data')
+
+    def test_stale_sweep_is_bounded_and_stays_inside_the_upload_area(self):
+        outside = self.base / 'unrelated'
+        outside.mkdir()
+        (outside / 'keep.txt').write_bytes(b'keep')
+        (self.state / 'token').write_text('TEST-PLACEHOLDER-NOT-PRODUCTION')
+        area = self.state / 'uploads-v030'
+        area.mkdir(mode=0o700)
+        old = time.time() - 7200
+
+        def make(name, data, mtime):
+            directory = area / name
+            directory.mkdir(mode=0o700)
+            (directory / 'data').write_bytes(data)
+            (directory / 'meta.json').write_bytes(b'{}')
+            for entry in (directory, directory / 'data', directory / 'meta.json'):
+                os.utime(entry, (mtime, mtime))
+            return directory
+
+        dead = make('a' * 32, b'stale', old)
+        live = make('b' * 32, b'live', old)
+        os.utime(live / 'data', None)          # actively written: never stale
+        foreign = make('not-an-upload-id', b'keep', old)
+        session = self.call('jb_upload_begin')
+        self.assertEqual(session['swept_stale'], 1)
+        self.assertFalse(dead.exists())
+        self.assertTrue((live / 'data').exists())
+        self.assertTrue((foreign / 'data').exists())
+        self.assertEqual((outside / 'keep.txt').read_bytes(), b'keep')
+        self.assertEqual((self.state / 'token').read_text(), 'TEST-PLACEHOLDER-NOT-PRODUCTION')
+        self.assertIn(session['upload_id'], self.upload_dirs())
+        self.assertIn('b' * 32, self.upload_dirs())
+        # A swept id is gone for good.
+        self.refused('jb_upload_commit', upload_id='a' * 32, project='main', path='x.bin')
+
+    def test_upload_area_metadata_is_reported(self):
+        session = b.invoke('jb_upload_begin', {'project': 'main', 'name': 'named.bin'})
+        self.assertEqual(session['concurrent_limit'], b.MAX_UPLOADS)
+        self.assertEqual(session['total_limit'], b.MAX_UPLOAD_TOTAL)
+        self.assertEqual(session['staged'], 0)
+        self.assertEqual(session['sha256'], hashlib.sha256(b'').hexdigest())
+        self.assertFalse(session['visible_in_project'])
+        self.assertEqual(session['staged_total'], 0)
+        committed = self.call('jb_upload_commit', upload_id=session['upload_id'],
+                              project='main', path='empty.bin')
+        self.assertEqual(committed['size'], 0)
+        self.assertEqual((self.project / 'empty.bin').read_bytes(), b'')
+        for args in ({'project': 'unknown'}, {'name': 'x/y'}, {'name': 'x' * 129},
+                     {'name': 'x\x00y'}):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                b.invoke('jb_upload_begin', args)
+
+
 class Projects(Fixture):
     def test_lists_configured_roots_and_missing_root_is_reported(self):
         missing = self.base / 'absent-root'
@@ -643,12 +1085,63 @@ class PrivateState(Fixture):
             ('jb_read_chunk', {'project': 'main', 'path': '.bridge-state/token'}),
             ('jb_write_chunk', {'project': 'main', 'path': '.bridge-state/token', 'offset': 0,
                                 'data_base64': base64.b64encode(b'x').decode()}),
+            ('jb_mkdir', {'project': 'main', 'path': '.bridge-state'}),
+            ('jb_mkdir', {'project': 'main', 'path': '.bridge-state/evil'}),
+            ('jb_mkdir', {'project': 'main', 'path': '.bridge-state/evil', 'parents': True}),
+            ('jb_mkdir', {'project': 'main', 'path': 'project/.bridge-state/inner',
+                          'parents': True}),
         ]
         for name, args in cases:
             with self.subTest(tool=name, args=args), self.assertRaises(ValueError):
                 b.invoke(name, args)
         self.assert_state_intact()
         self.assertTrue((self.state / 'token').exists())
+
+    def test_mkdir_never_creates_the_state_directory(self):
+        # The state directory exists; a name-only check would still be the only
+        # thing standing between the caller and it. Both orders are exercised.
+        self.refused('jb_mkdir', project='main', path='.bridge-state/token')
+        self.assertFalse((self.state / 'token').is_dir())
+        missing = self.base / 'ghost-state'
+        target = self.base / 'ordinary-dir'
+        target.mkdir()
+        (target / '.bridge-state').symlink_to(missing, target_is_directory=True)
+        self.refused('jb_mkdir', project='main', path='ordinary-dir/.bridge-state/x',
+                     parents=True)
+        self.refused('jb_mkdir', project='main', path='ordinary-dir/.bridge-state',
+                     parents=True)
+        self.assertFalse(missing.exists())
+        self.assert_state_intact()
+
+    def test_upload_commit_refuses_the_state_directory_and_arguments(self):
+        session = self.call('jb_upload_begin')
+        upload_id = session['upload_id']
+        self.call('jb_upload_chunk', upload_id=upload_id, offset=0,
+                  data_base64=base64.b64encode(b'payload').decode())
+        for path in ('.bridge-state', '.bridge-state/token', '.bridge-state/uploads-v030',
+                     'project/.bridge-state/x'):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                self.call('jb_upload_commit', upload_id=upload_id, project='main', path=path)
+        # The refusals left the staging alone: the same id still commits normally.
+        committed = self.call('jb_upload_commit', upload_id=upload_id, project='main',
+                              path='legit.bin')
+        self.assertEqual(committed['size'], len(b'payload'))
+        self.assertEqual((self.base / 'legit.bin').read_bytes(), b'payload')
+        self.assert_state_intact()
+        # The committed id is consumed and the staging area is empty again.
+        self.assertEqual(sorted((self.state / 'uploads-v030').iterdir()), [])
+
+    def test_staging_area_is_not_a_readable_project(self):
+        session = self.call('jb_upload_begin')
+        self.call('jb_upload_chunk', upload_id=session['upload_id'], offset=0,
+                  data_base64=base64.b64encode(b'TEST-PLACEHOLDER-STAGED').decode())
+        found = self.call('jb_search', project='main', content='TEST-PLACEHOLDER')
+        self.assertEqual(found['matches'], [])
+        listed = self.call('jb_list_dir', project='main')
+        self.assertNotIn('.bridge-state', [e['name'] for e in listed['entries']])
+        self.assertEqual(listed['total'], 3)
+        self.assertNotIn('token', json.dumps(listed))
+        self.assert_state_intact()
 
     def test_listing_and_search_never_report_the_state_directory(self):
         listed = self.call('jb_list_dir', project='main')
@@ -691,6 +1184,13 @@ class Authorization(Fixture):
         'jb_read_chunk': {'project': 'main', 'path': 'x'},
         'jb_write_chunk': {'project': 'main', 'path': 'x', 'offset': 0, 'data_base64': ''},
         'jb_projects': {},
+        'jb_mkdir': {'project': 'main', 'path': 'x'},
+        # jb_upload_begin takes no required argument, so the missing-argument loop
+        # below has nothing to strip; every other upload tool does.
+        'jb_upload_begin': {},
+        'jb_upload_chunk': {'upload_id': 'a' * 32, 'offset': 0, 'data_base64': ''},
+        'jb_upload_commit': {'upload_id': 'a' * 32, 'project': 'main', 'path': 'x'},
+        'jb_upload_abort': {'upload_id': 'a' * 32},
     }
 
     def test_registry_matches_expected_tools(self):
@@ -698,12 +1198,26 @@ class Authorization(Fixture):
                     'jb_write_file', 'jb_edit_file', 'jb_exec', 'jb_stage_update',
                     'jb_validate_update', 'jb_apply_update', 'jb_restart', 'jb_rollback',
                     'jb_list_dir', 'jb_stat', 'jb_delete', 'jb_rename', 'jb_search',
-                    'jb_read_chunk', 'jb_write_chunk', 'jb_projects']
+                    'jb_read_chunk', 'jb_write_chunk', 'jb_projects',
+                    'jb_mkdir', 'jb_upload_begin', 'jb_upload_chunk',
+                    'jb_upload_commit', 'jb_upload_abort']
         self.assertEqual([tool['name'] for tool in b.TOOLS], expected)
         self.assertEqual(sorted(b.SPEC), sorted(expected))
         for tool in b.TOOLS:
             self.assertFalse(tool['inputSchema']['additionalProperties'])
-        self.assertEqual(b.VERSION, '0.3.4')
+        self.assertEqual(b.VERSION, '0.3.5')
+        # 0.3.5 appends five tools after the twenty 0.3.4 tools: the first twenty
+        # keep their exact names, order and schemas.
+        self.assertEqual(len(expected), 25)
+        self.assertEqual(b.SPEC['jb_mkdir']['required'], ['project', 'path'])
+        self.assertEqual(sorted(b.SPEC['jb_mkdir']['properties']),
+                         ['mode', 'parents', 'path', 'project'])
+        self.assertEqual(b.SPEC['jb_upload_begin']['required'], [])
+        self.assertEqual(b.SPEC['jb_upload_chunk']['required'],
+                         ['upload_id', 'offset', 'data_base64'])
+        self.assertEqual(b.SPEC['jb_upload_commit']['required'],
+                         ['upload_id', 'project', 'path'])
+        self.assertEqual(b.SPEC['jb_upload_abort']['required'], ['upload_id'])
 
     def unknown_keys(self, name):
         properties = set(b.SPEC[name]['properties'])
@@ -737,7 +1251,14 @@ class Authorization(Fixture):
                            ('jb_delete', {'project': 'main', 'path': 'x', 'confirm': 'true'}),
                            ('jb_list_dir', {'project': 'main', 'limit': True}),
                            ('jb_read_chunk', {'project': 'main', 'path': 'x', 'offset': 1.0}),
-                           ('jb_stat', {'project': 1, 'path': 'x'})):
+                           ('jb_stat', {'project': 1, 'path': 'x'}),
+                           ('jb_mkdir', {'project': 'main', 'path': 'x', 'parents': 'yes'}),
+                           ('jb_mkdir', {'project': 'main', 'path': 'x', 'mode': 0o700}),
+                           ('jb_upload_chunk', {'upload_id': 'a' * 32, 'offset': True,
+                                                'data_base64': ''}),
+                           ('jb_upload_commit', {'upload_id': 'a' * 32, 'project': 'main',
+                                                 'path': 'x', 'overwrite': 1}),
+                           ('jb_upload_abort', {'upload_id': 1})):
             with self.subTest(tool=name, args=args), self.assertRaises(ValueError):
                 b.invoke(name, args)
 
@@ -766,7 +1287,7 @@ class Authorization(Fixture):
         self.assertEqual(sorted(device),
                          ['bridge', 'ios', 'machine', 'pid', 'release', 'source_sha256',
                           'system', 'uid'])
-        self.assertEqual(device['bridge'], '0.3.4')
+        self.assertEqual(device['bridge'], '0.3.5')
 
     def test_no_root_helper_no_token_no_root_widening(self):
         self.put('x', b'x')
@@ -779,7 +1300,7 @@ class Authorization(Fixture):
                 self.assertNotIn('token', str(result))
                 self.assertNotIn('root_helper', str(result))
         source = Path(b.__file__).read_text()
-        block = source[source.index('# 0.3.4 file interface.'):source.index('\ndef invoke(')]
+        block = source[source.index('# 0.3.5 file interface.'):source.index('\ndef invoke(')]
         for forbidden in ('setuid', 'sudo', 'token', 'geteuid() == 0'):
             self.assertNotIn(forbidden, block)
         self.assertFalse(hasattr(b, 'root'))
@@ -841,6 +1362,37 @@ class LegacyListdirSemantics(Fixture):
             result = self.call('jb_search', project='main', name_pattern='*.txt')
         found = sorted(m['path'] for m in result['matches'])
         self.assertEqual(found, ['dir/a.txt', 'dir/b.txt'])
+
+    def test_mkdir_and_uploads_survive_descriptor_consuming_listdir(self):
+        # 0.3.5 lists the upload area twice per begin (stale sweep, then inventory)
+        # and lists inside one upload directory per abort/commit, so both must go
+        # through list_names() as well.
+        real = os.listdir
+        area = self.state / 'uploads-v030'
+        area.mkdir(mode=0o700)
+        stale = area / ('a' * 32)
+        stale.mkdir(mode=0o700)
+        (stale / 'data').write_bytes(b'')
+        old = time.time() - 7200
+        for entry in (stale, stale / 'data'):
+            os.utime(entry, (old, old))
+        with patch.object(os, 'listdir', self.consuming_listdir(real)):
+            created = self.call('jb_mkdir', project='main', path='d/e', parents=True)
+            self.assertEqual(created['created_components'], ['d', 'e'])
+            session = self.call('jb_upload_begin')
+            self.assertEqual(session['swept_stale'], 1)
+            upload_id = session['upload_id']
+            self.call('jb_upload_chunk', upload_id=upload_id, offset=0,
+                      data_base64=base64.b64encode(b'payload').decode())
+            committed = self.call('jb_upload_commit', upload_id=upload_id, project='main',
+                                  path='out.bin')
+            self.assertEqual(committed['sha256'], hashlib.sha256(b'payload').hexdigest())
+            second = self.call('jb_upload_begin')['upload_id']
+            aborted = self.call('jb_upload_abort', upload_id=second)
+            self.assertTrue(aborted['removed'])
+        self.assertFalse(stale.exists())
+        self.assertEqual((self.project / 'out.bin').read_bytes(), b'payload')
+        self.assertTrue((self.project / 'd' / 'e').is_dir())
 
     def test_helper_keeps_the_callers_descriptor_usable(self):
         real = os.listdir
