@@ -180,6 +180,41 @@ class PackageTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self._preinst_after_removal(prior_state='install ok installed')
 
+    def _preinst_transaction(self, meta, current_boot):
+        """Drive a clean-install preinst with a transaction dir present.
+
+        The guard's decision is what is under test, so transaction_meta() and
+        boot_stamp() are mocked; everything else mirrors _preinst_after_removal.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            tx = Path(d) / 'transaction'
+            tx.mkdir()
+            with patch.object(lc, 'STORE', Path(d) / 'store'), patch.object(lc, 'DEST', Path(d) / 'service.plist'), \
+                 patch.object(lc, 'TRANSACTION', tx), \
+                 patch.object(lc, 'transaction_meta', return_value=meta), \
+                 patch.object(lc, 'boot_stamp', return_value=current_boot), \
+                 patch.object(lc, 'preflight', return_value=Path('/')), \
+                 patch.object(lc, 'known'), patch.object(lc, 'active', return_value=None), \
+                 patch.object(lc, 'prior_state', return_value='deinstall ok config-files'), \
+                 patch.object(lc, 'removal', return_value=Mock(returncode=0)):
+                return lc.main('preinst', ['install', '0.3.2-3+experimental'])
+
+    def test_cross_boot_snapshot_does_not_block_clean_install(self):
+        # A snapshot from a previous boot can never be restored, so it must not
+        # poison a clean install forever (the bug behind preinst-root-residue).
+        self._preinst_transaction({'committed': False, 'boot': 'a' * 64}, current_boot='b' * 64)
+
+    def test_same_boot_uncommitted_snapshot_blocks_clean_install(self):
+        with self.assertRaises(RuntimeError):
+            self._preinst_transaction({'committed': False, 'boot': 'a' * 64}, current_boot='a' * 64)
+
+    def test_committed_snapshot_does_not_block_clean_install(self):
+        self._preinst_transaction({'committed': True, 'boot': 'a' * 64}, current_boot='a' * 64)
+
+    def test_unreadable_snapshot_does_not_block_clean_install(self):
+        # A transaction dir with no usable meta is equally unrecoverable.
+        self._preinst_transaction(None, current_boot='a' * 64)
+
     def test_upgrade_action_uses_the_upgrade_path(self):
         # The 0.3.3 clean-install-only guard no longer refuses 'upgrade': the
         # upgrade path validates the *installed* runtime and the plist first.

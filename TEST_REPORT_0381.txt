@@ -1,0 +1,52 @@
+OpenMinis-Jailbreak 0.3.8-1+experimental — 测试报告（修复过期快照阻塞全新安装）
+================================================================================
+DEB: OpenMinis-Jailbreak_0.3.8-1+experimental_iphoneos-arm64e.deb
+SHA256: 94b647c21ae09ddafe1959c8437b308658bf8b1976b12df181c7a96159482b8c
+可复现构建: 连续两次构建字节完全一致（SOURCE_DATE_EPOCH 固定、dpkg-deb --root-owner-group -Zgzip -z9）
+源码归档: OpenMinis-Jailbreak_0.3.8-1+experimental-source.tar.gz（openminis-jb/ 前缀，见 SHA256SUMS）
+真机演练包: OpenMinis-Jailbreak_0.3.8-ABORT-TEST.deb（**仅供测试，不进 SHA256SUMS、不发布**，
+          由 make_abort_test_deb.py 生成；control 脚本与本版一致、data.tar.gz 中部被破坏，
+          dpkg 会在解包阶段失败并调用 postrm abort-upgrade。说明见 ABORT_TEST_0371.md）
+移动端 payload: launcher.py / maintenance_runtime.py / bridge.py / mobile_setup.py 与已部署的
+          0.3.6 / 0.3.7 逐字节相同（bridge 仍为 0.3.6，25 个工具，MCP API 仍为 3）。
+          本版只改 control 脚本（package_lifecycle.py）与文档，因此已部署的 0.3.6 / 0.3.7
+          会命中“本版打包集合”而通过运行时白名单，无需新增 KNOWN_SETS。
+
+一、本版改动（0.3.8）
+--------------------
+修掉真机发现的“过期快照阻塞全新安装”缺陷：
+  干净安装守卫此前只要 /usr/local/lib/openminis-jb-transaction 存在就一律拒绝，而卸载代码
+  （postrm remove_residue）又刻意保留该快照供复查。两者叠加导致：经历过一次中断升级之后，
+  「卸载 → 重装」会永久卡死在 preinst-root-residue，必须人工 mv 快照才能装回。
+  现在改为：只有【同一开机、未提交】的快照（真正进行中的升级）才拒绝；跨开机、已提交、
+  或结构不可读的快照都不可能用于恢复，只打印一行 NOTICE 并放行。
+
+  真机复现：0.3.7 升级中断演练留下的快照跨过了一次重启，卸载后重装被拒（FAILED stage=
+  preinst-root-residue）；人工移走快照后重装成功，确认为全新状态（active.previous 为空、
+  无 openminis-jb-previous、config/audit 从零生成、新 token）。修复后该路径不再阻塞。
+
+二、测试（本机 Linux + Python 3.12，Python 3.9 仅做语法解析）
+----------------------------------------------------------
+233 项全部通过：
+  test_package 23（新增 4 项：跨开机快照放行 / 同开机未提交拒绝 / 已提交放行 / 不可读放行）
+  test_safety 31、test_filetools 74、test_upgrade 56、test_api 39、test_supervisor 10。
+
+三、本轮真机验证（iPhone15,3 / iOS 16.4.1 / Dopamine Roothide）
+---------------------------------------------------------------
+- 完整重启 + 重新越狱后服务自动恢复：jbroot 变化（.jbroot-3C09E67303987B40 →
+  .jbroot-62CD82A15F401C8F），服务仍 healthy，token 哈希 3a9c1c36… 未变，无需重配 MCP。
+- 全新安装 / 卸载清理 / 免 purge 重装：卸载清掉运行库、plist、回退区与移动端数据；重装后
+  全新状态、新 token、active.previous 为空。
+- 压力边界：递归删除恰好 10000 条目成功、10009 拒绝；16 MiB 全文搜索；10 秒搜索墙钟上限
+  （20000 个文件时 10.003s 触发）；4 路并发上传（第 5 个拒绝）；256 MiB 暂存上限完整填满验证。
+- 分块读写：262144 边界、262145/length0/offset>1TiB 拒绝、重组哈希一致。
+- 自身更新链路：stage/validate/apply（约 8 秒切换）/rollback（约 8 秒复原）；坏版本
+  （api 3→4）试运行约 10–15 秒后未被提升、自动回退，active.current 始终未变。
+
+四、发现的已知限制（已写入 README）
+----------------------------------
+- 递归删除非原子：超出预算时已删条目不恢复；>10000 条目的树须分片删除。
+- jb_exec 子进程每文件上限 256 KiB（RLIMIT_FSIZE），大文件须走分块接口。
+- 分块写入/上传每块对整个文件重算 sha256（O(n²)），256 MiB 上传需数分钟。
+- 状态文件必须 0600（属主 mobile），否则加载器拒绝。
+- EXDEV 跨卷回退路径真机未触发。

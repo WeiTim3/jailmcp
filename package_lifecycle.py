@@ -23,7 +23,7 @@ PREVIOUS = Path('/usr/local/lib/openminis-jb-previous')
 PREV_SCHEMA = 'openminis-jb-previous-1'
 PREV_EXEC = '/usr/local/bin/openminis-jb-restore-runtime'
 RECEIPT = STORE / '.clean-install-v032'
-VERSION = '0.3.7-1+experimental'
+VERSION = '0.3.8-1+experimental'
 RECEIPT_DATA = ('OpenMinis-Jailbreak clean-install ' + VERSION + '\n').encode()
 RECEIPT_PREFIX = b'OpenMinis-Jailbreak clean-install '
 SCHEMA = 'openminis-jb-upgrade-1'
@@ -1354,9 +1354,26 @@ def main(phase, args):
         r = preflight()
         stage(phase + '-known-artifacts'); known(r, required=False)
         stage('preinst-root-residue')
-        if (os.path.lexists(STORE) or os.path.lexists(DEST) or
-                os.path.lexists(TRANSACTION)):
-            raise RuntimeError('Root runtime/backup residue exists; preserve and review before clean install')
+        if os.path.lexists(STORE) or os.path.lexists(DEST):
+            raise RuntimeError('Root runtime or service plist residue exists; preserve and review before clean install')
+        if os.path.lexists(TRANSACTION):
+            meta = transaction_meta()
+            in_flight = False
+            # Only a snapshot the abort path could actually restore — taken during
+            # this same boot and not yet committed — means an upgrade is genuinely
+            # mid-flight and must be blocked. A snapshot from an earlier boot (or
+            # already committed, or structurally unreadable) can never be reused,
+            # so it must not poison a clean install forever.
+            if meta is not None and meta['committed'] is False:
+                try:
+                    in_flight = (meta['boot'] == boot_stamp())
+                except Exception:
+                    in_flight = True  # cannot prove it is stale; refuse rather than risk
+            if in_flight:
+                raise RuntimeError('An in-flight transaction snapshot exists; finish or clear it before a clean install')
+            print('NOTICE: a transaction snapshot that cannot be used for recovery is present at '
+                  + str(TRANSACTION) + '; it does not block this clean install and may be removed '
+                  + 'with: sudo rm -rf ' + str(TRANSACTION))
         stage('preinst-service')
         if active():
             raise RuntimeError('Same-label service exists; uninstall baseline first')

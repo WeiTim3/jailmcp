@@ -69,7 +69,7 @@ def build():
         lines.append(hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + path.name)
     (HERE / 'SHA256SUMS').write_text('\n'.join(lines) + '\n')
     # The device-test artifact must never appear in the release checksums.
-    if (HERE / 'OpenMinis-Jailbreak_0.3.7-ABORT-TEST.deb').exists():
+    if (HERE / 'OpenMinis-Jailbreak_0.3.8-ABORT-TEST.deb').exists():
         assert 'ABORT-TEST' not in (HERE / 'SHA256SUMS').read_text()
     return archive_path
 
