@@ -1,17 +1,37 @@
-# OpenMinis-Jailbreak 0.3.9-1+experimental
+# OpenMinis-Jailbreak 0.3.10-1+experimental
 
 以 launchd 服务形式运行、通过本机 MCP 向 OpenMinis 提供越狱侧能力的服务包。
 OpenMinis 本体不需要越狱权限、不需要注入、不需要改签名。
 
 完整说明见项目自述文件；本文档随包安装，只记录版本相关信息。
 
-## 本版改动（0.3.9）
+## 本版改动（0.3.10）
+
+`jb_find` 现在**直接接受设备路径**，自动映射到系统目录（bridge 版本提升到 `0.3.8`）：
+
+| 你写 | 实际搜索 |
+|---|---|
+| `/var/mobile/Documents`（默认 `/var/mobile`） | `/rootfs/private/var/mobile/Documents` |
+| `/System/Library/Fonts` | `/rootfs/System/Library/Fonts` |
+| 已是 `/rootfs/…` | 原样使用 |
+
+加 `jailbreak=true` 改为搜索越狱目录（jbroot）。`jb_maintenance_info` 的 `paths` 字段给出两条根路径与 `prefer: "system"`。
+
+`launcher.py` / `maintenance_runtime.py` / `mobile_setup.py` 未变，只有 `bridge.py` 变了；升级白名单已含 0.3.9 那套运行库。
+
+## 历史（0.3.9）
 
 新增工具 **`jb_find`**（bridge 版本提升到 `0.3.7`）：在**真实设备文件系统**（`/rootfs` 下）按名字递归搜索，
 默认从 `/rootfs/private/var/mobile` 开始。只读、有界（墙钟 / 条目数 / 深度），不进入符号链接目录。
 
 背景：roothide 设备上 `/var` 被重定向到 jailbreak 自己的树，设备真实数据在 `/rootfs/private/var/…`；
 此前只能看到重定向那棵，所以会"搜不到"某些文件（如 DumpDecrypter 的 ipa）。
+
+**路径约定（系统目录优先）**：同一路径前缀下有两棵树——**系统目录** `/rootfs/private/var/mobile/…`
+（iOS 真实数据卷）与**越狱目录** `/var/mobile/…`（roothide 重定向，落在 jbroot 内）。
+约定：查找、读取、写入**一律以系统目录为先，越狱目录为次**。
+`jb_maintenance_info` 新增 `paths` 字段直接给出这两条根路径（`prefer: "system"`），
+`jb_find` 默认也搜系统目录。
 
 `launcher.py` / `maintenance_runtime.py` / `mobile_setup.py` 与 0.3.6 逐字节相同，**只有 `bridge.py` 变了**，
 因此升级白名单新增了 0.3.6 运行库集合（`KNOWN_SETS['0.3.6-1']`）；0.3.6 / 0.3.7 / 0.3.8 均可原地升级。
@@ -57,7 +77,7 @@ OpenMinis 本体不需要越狱权限、不需要注入、不需要改签名。
 
 ## 版本与兼容
 
-- 包版本 `0.3.9-1+experimental`；移动端 bridge `0.3.7`；MCP API `3`；工具 26 个。
+- 包版本 `0.3.10-1+experimental`；移动端 bridge `0.3.8`；MCP API `3`；工具 26 个。
 - 支持从 0.3.3-1、0.3.5-1、0.3.6、0.3.7、0.3.8 原地升级（白名单内置），token 完整保留。
 - 更旧的版本（如 0.3.2 系列）仍需先卸载再安装。
 - 安装后完整重启并重新越狱的自动恢复已真机验证（jbroot 变化后服务自动恢复）。

@@ -1,0 +1,32 @@
+OpenMinis-Jailbreak 0.3.10-1+experimental — 测试报告（jb_find 设备路径自动映射）
+================================================================================
+DEB: OpenMinis-Jailbreak_0.3.10-1+experimental_iphoneos-arm64e.deb
+SHA256: 3c83a7fb1b40234d345656868821af843b970d9c46abb7f5d435f626800b4f41
+可复现构建: 连续两次构建字节完全一致（SOURCE_DATE_EPOCH 固定、dpkg-deb --root-owner-group -Zgzip -z9）
+源码归档: OpenMinis-Jailbreak_0.3.10-1+experimental-source.tar.gz（见 SHA256SUMS）
+移动端 payload: 只有 bridge.py 变化（VERSION 0.3.7 -> 0.3.8，sha256 5401eca53b7446cedc5a8d82c7d3799fad1fc9e1aa219bfaea4bacdfd93d221d）：jb_find 现在
+         接受设备路径并自动映射到系统目录；launcher.py / maintenance_runtime.py /
+         mobile_setup.py 与 0.3.6 逐字节相同。升级白名单新增 KNOWN_SETS['0.3.9-1']。
+
+一、本版改动（0.3.10）
+--------------------
+jb_find 直接接受设备路径，自动落到系统目录（系统优先）：
+  /var/mobile/Documents   -> /rootfs/private/var/mobile/Documents
+  /System/Library/Fonts   -> /rootfs/System/Library/Fonts
+  /rootfs/...             -> 原样使用
+加 jailbreak=true 改为搜索越狱目录（jbroot）。jb_maintenance_info 的 paths 字段给出
+system / jailbreak 两条根路径与 prefer="system"。
+
+二、测试（本机 Linux + Python 3.12）
+------------------------------------
+233 项全部通过：test_package 23、test_filetools 74、test_safety 31、test_upgrade 56、
+test_api 39、test_supervisor 10。
+
+三、本轮真机验证（iPhone15,3 / iOS 16.4.1 / Dopamine Roothide）
+---------------------------------------------------------------
+- 自更新通道部署 bridge 0.3.8：stage -> validate -> apply，约 6 秒，healthy，token 不变。
+- /System/Library/Fonts -> /rootfs/System/Library/Fonts，命中 PingFang.ttc、ADTTime.ttc 等。
+- /var/mobile/Documents -> /rootfs/private/var/mobile/Documents，命中 5 个 ipa
+  （含 光·遇_0.15.6.ipa 2247737734 字节）。
+- 同一路径 + jailbreak=true -> jbroot 的 Documents（越狱目录）。
+- 默认不带 path -> /rootfs/private/var/mobile（系统目录）。

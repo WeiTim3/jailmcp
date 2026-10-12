@@ -1206,7 +1206,7 @@ class Authorization(Fixture):
         self.assertEqual(sorted(b.SPEC), sorted(expected))
         for tool in b.TOOLS:
             self.assertFalse(tool['inputSchema']['additionalProperties'])
-        self.assertEqual(b.VERSION, '0.3.7')
+        self.assertEqual(b.VERSION, '0.3.8')
         # 0.3.5 appends five tools after the twenty 0.3.4 tools: the first twenty
         # keep their exact names, order and schemas.
         self.assertEqual(len(expected), 26)
@@ -1282,13 +1282,13 @@ class Authorization(Fixture):
         info = self.call('jb_maintenance_info')
         self.assertEqual(sorted(info),
                          ['active', 'api', 'apply', 'audit', 'authority', 'exec',
-                          'max_file_bytes', 'pid', 'projects', 'root_helper', 'sandbox',
+                          'max_file_bytes', 'paths', 'pid', 'projects', 'root_helper', 'sandbox',
                           'source_sha256', 'supervised', 'supervisor', 'uid', 'version'])
         device = self.call('jb_device_info')
         self.assertEqual(sorted(device),
                          ['bridge', 'ios', 'machine', 'pid', 'release', 'source_sha256',
                           'system', 'uid'])
-        self.assertEqual(device['bridge'], '0.3.7')
+        self.assertEqual(device['bridge'], '0.3.8')
 
     def test_no_root_helper_no_token_no_root_widening(self):
         self.put('x', b'x')

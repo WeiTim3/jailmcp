@@ -199,7 +199,7 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(sorted(bridge.SPEC),sorted(tool['name'] for tool in bridge.TOOLS))
         for tool in bridge.TOOLS:
             self.assertFalse(tool['inputSchema']['additionalProperties'])
-        self.assertEqual(bridge.VERSION,'0.3.7')
+        self.assertEqual(bridge.VERSION,'0.3.8')
         self.assertEqual(rt.STATE,Path('/var/mobile/Documents/OpenMinis-Jailbreak/.bridge-state'))
         # No new tool can widen its own roots: none takes a 'projects' argument and
         # none reaches outside the configured roots.

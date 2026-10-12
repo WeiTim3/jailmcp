@@ -720,23 +720,26 @@ class UpgradeHelperTests(UpgradeCase):
             self.assertIsNone(lc.known_set(mixed))
             self.assertIsNone(lc.known_set(dict(mixed, **{'bridge.py': 'f' * 64})))
 
-    def test_packaged_payload_and_the_deployed_0_3_6_runtime(self):
-        """0.3.9 adds jb_find, so bridge.py now differs from the deployed 0.3.6 set.
+    def test_packaged_payload_and_the_deployed_runtime_sets(self):
+        """Every release that changes bridge.py lists the previous runtime as an
+        upgrade source, so a device still running it can upgrade in place."""
 
-        That older set therefore has to stay listed as an upgrade source; if any
-        other runtime file ever changes it needs its own allowlist entry too.
-        """
-        deployed = {'launcher.py': 'b905c063a8e7235b2e40cd1e3137e77372537d4611ff0af1e410049e9f96b497',
+        def hashes(bridge):
+            return {'launcher.py': 'b905c063a8e7235b2e40cd1e3137e77372537d4611ff0af1e410049e9f96b497',
                     'maintenance_runtime.py': 'e38fe25d1d61ba759824a3d17af2101af0fbc1a6533c3444e8636211d95af46a',
-                    'bridge.py': '1d64cb7fe9de833751e0dc3d7a3fcb123b108afd99df07c27ffbed3b0539c385',
+                    'bridge.py': bridge,
                     'mobile_setup.py': '78ed4a0f75a16ba15298649713db62d3434c86e894ba0a3cace5385907389550'}
-        self.assertEqual(lc.KNOWN_SETS['0.3.6-1'], deployed)
-        for name in ('launcher.py', 'maintenance_runtime.py', 'mobile_setup.py'):
-            self.assertEqual(PACKAGED[name], deployed[name])
-        self.assertNotEqual(PACKAGED['bridge.py'], deployed['bridge.py'])
+
+        listed = {'0.3.6-1': '1d64cb7fe9de833751e0dc3d7a3fcb123b108afd99df07c27ffbed3b0539c385',
+                  '0.3.9-1': 'e74d21d5cc1189911617d9e2b5f6e28dead7466f7cf68082206f9c9cc3aaaf43'}
         with patch.object(lc, 'HASHES', dict(PACKAGED)):
+            for label, bridge in listed.items():
+                self.assertEqual(lc.KNOWN_SETS[label], hashes(bridge))
+                self.assertNotEqual(PACKAGED['bridge.py'], bridge)
+                self.assertEqual(lc.known_set(hashes(bridge)), label)
             self.assertEqual(lc.known_set(dict(PACKAGED)), 'packaged ' + lc.VERSION)
-            self.assertEqual(lc.known_set(dict(deployed)), '0.3.6-1')
+            for name in ('launcher.py', 'maintenance_runtime.py', 'mobile_setup.py'):
+                self.assertEqual(PACKAGED[name], hashes(listed['0.3.6-1'])[name])
 
     def test_helper_refuses_when_packaged_bridge_changed(self):
         harness = Harness(self, release='0.3.3-1+experimental')

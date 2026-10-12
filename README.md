@@ -44,20 +44,30 @@ token 位于设备上（私密数据，勿分享）：
 - **信息**：`jb_device_info`、`jb_process_list`、`jb_maintenance_info`、`jb_projects`
 - **文件**：`jb_read_file`、`jb_write_file`、`jb_edit_file`、`jb_list_dir`、`jb_stat`、
   `jb_mkdir`、`jb_delete`、`jb_rename`、`jb_search`、`jb_read_chunk`、`jb_write_chunk`
-- **真实文件系统**：`jb_find`（在 `/rootfs` 下按名字搜整机，只读、有界）
+- **真实文件系统**：`jb_find`（用设备路径搜整机，自动落到系统目录；只读、有界）
 - **上传**：`jb_upload_begin` / `jb_upload_chunk` / `jb_upload_commit` / `jb_upload_abort`（原子就位）
 - **执行**：`jb_exec`、`jb_restart`
 - **更新**：`jb_stage_update`、`jb_validate_update`、`jb_apply_update`、`jb_rollback`
 
-## 真实文件系统（roothide）
+## 路径约定：系统目录优先，越狱目录次之
 
-在 roothide 设备上，**`/var` 是被重定向的**（指向 jailbreak 自己的那棵树），设备**真实**路径在 `/rootfs` 下：
+在 roothide 设备上，**同一个路径前缀下有两棵不同的树**：
 
-- 真实用户数据：`/rootfs/private/var/mobile/…`
-- `jb_find` 默认搜的就是这棵真实树（`/rootfs/private/var/mobile`），也可指定 `/rootfs` 下任意路径。
+| 名称 | 路径 | 是什么 |
+|---|---|---|
+| **系统目录**（第一） | `/rootfs/private/var/mobile/…` | iOS 真实数据卷 |
+| **越狱目录**（第二） | `/var/mobile/…` → `/rootfs/private/var/mobile/Containers/Shared/AppGroup/.jbroot-<id>/var/mobile/…` | roothide 的 jbroot |
 
-文件类工具（`jb_read_file` 等）仍在项目根 `/var/mobile/Documents/OpenMinis-Jailbreak` 内工作；
-要读其它真实文件，用 `jb_find` 定位后配合 `jb_exec`（或直接用绝对路径）。
+两者**前缀相同但不是同一目录**（越狱目录嵌套在系统目录的 `Containers/Shared/AppGroup/.jbroot-*/` 下）。
+**约定：查找、读取、写入一律以系统目录为先，越狱目录为次。**
+`/System/...` 同理 —— 真实系统文件在 `/rootfs/System/...`（如字体 `/rootfs/System/Library/Fonts`）。
+
+- `jb_find` 直接写**设备路径**即可，会自动落到系统目录：
+  `/var/mobile/Documents` → `/rootfs/private/var/mobile/Documents`、
+  `/System/Library/Fonts` → `/rootfs/System/Library/Fonts`；
+  已经是 `/rootfs/…` 的原样使用；加 `jailbreak=true` 则改搜**越狱目录**。
+- `jb_maintenance_info` 的 `paths` 字段直接给出这两条根路径（`prefer: "system"`）。
+- 文件类工具（`jb_read_file` 等）仍限在项目根内；读其它文件用 `jb_find` 定位后配 `jb_exec`。
 
 ## 安全边界（务必阅读）
 

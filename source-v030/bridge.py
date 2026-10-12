@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 import maintenance_runtime as rt
 
-VERSION = '0.3.7'
+VERSION = '0.3.8'
 # One full 262144-byte chunk is ~349528 base64 characters; the transport limit
 # must cover that plus the JSON envelope so jb_write_chunk can accept MAX_CHUNK.
 MAX_BODY = 400000
@@ -115,8 +115,8 @@ tool('jb_upload_commit', 'Verify the assembled upload (against expected_sha256 w
       'overwrite': BOOL}, ('upload_id', 'project', 'path'))
 tool('jb_upload_abort', 'Discard a staged upload and its idempotent opaque id; the id can never be reused afterwards and only the upload area is touched.',
      {'upload_id': STRING}, ('upload_id',))
-tool('jb_find', 'Read-only name search over the device filesystem under /rootfs - the real device tree (default /rootfs/private/var/mobile). Any path that resolves under /rootfs is accepted; / itself is refused. Bounded by wall clock, entry count and depth; symlinked directories are never entered; nothing can be written.',
-     {'path': STRING, 'name_pattern': STRING,
+tool('jb_find', 'Read-only name search over the REAL device tree. Give paths the way the device uses them: /var/... is read as /private/var/... under /rootfs, so /var/mobile/Documents means the real SYSTEM data volume (default path /var/mobile). jailbreak=true searches the bridge\'s own view instead (which lands in the jbroot); a path already under /rootfs is used as-is. Bounded by wall clock, entry count and depth; symlinked directories are never entered; nothing can be written.',
+     {'path': STRING, 'name_pattern': STRING, 'jailbreak': BOOL,
       'limit': {'type': 'integer', 'minimum': 1, 'maximum': 1000},
       'max_depth': {'type': 'integer', 'minimum': 0, 'maximum': 32},
       'max_seconds': {'type': 'integer', 'minimum': 1, 'maximum': 30},
@@ -186,6 +186,12 @@ MAX_SEARCH_BYTES = 16777216
 SEARCH_SECONDS = 10.0            # wall-clock bound, reported in the result
 EXCERPT = 200                    # bounded excerpt length
 REAL_ROOT = '/rootfs'            # jb_find: the real device tree (a jailbreak redirect owns /var)
+# This device carries two trees under the same path prefixes. The SYSTEM tree
+# (/rootfs/private/var/mobile) is the real data volume; /var/mobile is a
+# roothide redirect that resolves into the jailbreak's jbroot. Search and read
+# the SYSTEM tree first, the jailbreak tree second.
+SYSTEM_DATA_ROOT = '/rootfs/private/var/mobile'
+JAILBREAK_LINK = '/var/mobile'
 MAX_FIND_LIMIT = 1000            # jb_find match cap
 MAX_FIND_DEPTH = 32
 MAX_FIND_SECONDS = 30
@@ -489,13 +495,37 @@ def tool_search(args):
             'limits': {'matches': limit, 'files': max_files, 'file_bytes': max_bytes,
                        'seconds': SEARCH_SECONDS}}
 
+def resolve_find_root(path, jailbreak):
+    """Map a device path onto the real tree under /rootfs.
+
+    By default the SYSTEM directory wins: /var/... is read as /private/var/... and
+    the result is taken under /rootfs, so /var/mobile/Documents means the real data
+    volume instead of the jailbreak's redirected tree. jailbreak=true keeps the
+    bridge's own view (which lands inside the jbroot), and a path already under
+    /rootfs is used as-is. Whatever the route, the result must resolve under
+    /rootfs or the request is refused.
+    """
+    if path == REAL_ROOT or path.startswith(REAL_ROOT + '/'):
+        candidate = path
+    elif jailbreak is True:
+        candidate = path
+    else:
+        mapped = '/private' + path if (path == '/var' or path.startswith('/var/')) else path
+        candidate = REAL_ROOT + ('' if mapped == '/' else mapped)
+    resolved = os.path.realpath(candidate)
+    if not (resolved == REAL_ROOT or resolved.startswith(REAL_ROOT + '/')):
+        raise ValueError('Only the real device tree under ' + REAL_ROOT + ' is searchable')
+    return resolved
+
+
 def tool_find(args):
-    path = args.get('path', '/rootfs/private/var/mobile')
+    path = args.get('path', '/var/mobile')
     pattern = args.get('name_pattern', '')
     limit = args.get('limit', 200)
     depth_max = args.get('max_depth', 12)
     seconds = args.get('max_seconds', 15)
     min_bytes = args.get('min_bytes', 0)
+    jailbreak = args.get('jailbreak', False)
     if not isinstance(path, str) or not path.startswith('/') or len(path) > MAX_PATH:
         raise ValueError('Invalid path')
     if not isinstance(pattern, str) or not 0 < len(pattern) <= 256:
@@ -504,12 +534,7 @@ def tool_find(args):
     if not 0 <= depth_max <= MAX_FIND_DEPTH: raise ValueError('Invalid max_depth')
     if not 1 <= seconds <= MAX_FIND_SECONDS: raise ValueError('Invalid max_seconds')
     if type(min_bytes) is not int or min_bytes < 0: raise ValueError('Invalid min_bytes')
-    # Only the real device tree is reachable. /var and its relatives are
-    # jailbreak redirects that expose a DIFFERENT tree, so resolve first and
-    # refuse anything that escapes /rootfs (including through a symlink).
-    resolved = os.path.realpath(path)
-    if not (resolved == REAL_ROOT or resolved.startswith(REAL_ROOT + '/')):
-        raise ValueError('Only paths under ' + REAL_ROOT + ' are searchable')
+    resolved = resolve_find_root(path, jailbreak)
     start = time.monotonic()
     matches = []
     reasons = []
@@ -1063,6 +1088,9 @@ def invoke(name, args):
                 'supervised': SUPERVISED, 'root_helper': False, 'sandbox': False,
                 'exec': conf.get('allow_mobile_shell') is True, 'apply': SUPERVISED,
                 'projects': conf['projects'], 'max_file_bytes': rt.MAX_FILE,
+                'paths': {'system': SYSTEM_DATA_ROOT, 'jailbreak': os.path.realpath(JAILBREAK_LINK),
+                          'prefer': 'system',
+                          'note': 'system and jailbreak share path prefixes but are different trees; prefer system'},
                 'active': rt.load('active-v030.json'), 'supervisor': rt.load('supervisor-v030.json', {}),
                 'authority': 'All mobile authority; existing external elevation rights are NOT prevented',
                 'audit': '100 records; fixed tool names and status only; mobile-editable'}
