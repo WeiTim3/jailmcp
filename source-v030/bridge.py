@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 import maintenance_runtime as rt
 
-VERSION = '0.3.8'
+VERSION = '0.3.9'
 # One full 262144-byte chunk is ~349528 base64 characters; the transport limit
 # must cover that plus the JSON envelope so jb_write_chunk can accept MAX_CHUNK.
 MAX_BODY = 400000
@@ -115,12 +115,14 @@ tool('jb_upload_commit', 'Verify the assembled upload (against expected_sha256 w
       'overwrite': BOOL}, ('upload_id', 'project', 'path'))
 tool('jb_upload_abort', 'Discard a staged upload and its idempotent opaque id; the id can never be reused afterwards and only the upload area is touched.',
      {'upload_id': STRING}, ('upload_id',))
-tool('jb_find', 'Read-only name search over the REAL device tree. Give paths the way the device uses them: /var/... is read as /private/var/... under /rootfs, so /var/mobile/Documents means the real SYSTEM data volume (default path /var/mobile). jailbreak=true searches the bridge\'s own view instead (which lands in the jbroot); a path already under /rootfs is used as-is. Bounded by wall clock, entry count and depth; symlinked directories are never entered; nothing can be written.',
-     {'path': STRING, 'name_pattern': STRING, 'jailbreak': BOOL,
+tool('jb_find', 'Read-only search over the REAL device tree: a name glob and/or a literal file-content string (with 1-based line and a bounded excerpt), a size range, and per-match metadata (mode, uid, gid, mtime). Give paths the way the device uses them: /var/... is read as /private/var/... under /rootfs, so /var/mobile/Documents means the real SYSTEM data volume (default path /var/mobile). jailbreak=true searches the bridge\'s own view instead (which lands in the jbroot); a path already under /rootfs is used as-is. Bounded by wall clock, entry count, depth, match count and per-file bytes; symlinked directories are never entered; nothing can be written.',
+     {'path': STRING, 'name_pattern': STRING, 'content': STRING, 'jailbreak': BOOL,
       'limit': {'type': 'integer', 'minimum': 1, 'maximum': 1000},
       'max_depth': {'type': 'integer', 'minimum': 0, 'maximum': 32},
       'max_seconds': {'type': 'integer', 'minimum': 1, 'maximum': 30},
-      'min_bytes': {'type': 'integer', 'minimum': 0}}, ('name_pattern',))
+      'min_bytes': {'type': 'integer', 'minimum': 0},
+      'max_bytes': {'type': 'integer', 'minimum': 0},
+      'max_file_bytes': {'type': 'integer', 'minimum': 1, 'maximum': 16777216}}, ())
 
 SPEC = {x['name']: x['inputSchema'] for x in TOOLS}
 
@@ -521,24 +523,34 @@ def resolve_find_root(path, jailbreak):
 def tool_find(args):
     path = args.get('path', '/var/mobile')
     pattern = args.get('name_pattern', '')
+    content = args.get('content', '')
     limit = args.get('limit', 200)
     depth_max = args.get('max_depth', 12)
     seconds = args.get('max_seconds', 15)
     min_bytes = args.get('min_bytes', 0)
+    max_bytes = args.get('max_bytes', 0)
+    max_file_bytes = args.get('max_file_bytes', 1048576)
     jailbreak = args.get('jailbreak', False)
     if not isinstance(path, str) or not path.startswith('/') or len(path) > MAX_PATH:
         raise ValueError('Invalid path')
-    if not isinstance(pattern, str) or not 0 < len(pattern) <= 256:
-        raise ValueError('Invalid name_pattern')
+    if (not isinstance(pattern, str) or len(pattern) > 256 or
+            not isinstance(content, str) or len(content) > 256):
+        raise ValueError('Invalid filter')
+    if not pattern and not content:
+        raise ValueError('A name glob or a content string is required')
     if not 1 <= limit <= MAX_FIND_LIMIT: raise ValueError('Invalid limit')
     if not 0 <= depth_max <= MAX_FIND_DEPTH: raise ValueError('Invalid max_depth')
     if not 1 <= seconds <= MAX_FIND_SECONDS: raise ValueError('Invalid max_seconds')
     if type(min_bytes) is not int or min_bytes < 0: raise ValueError('Invalid min_bytes')
+    if type(max_bytes) is not int or max_bytes < 0: raise ValueError('Invalid max_bytes')
+    if max_bytes and max_bytes < min_bytes: raise ValueError('Invalid size range')
+    if not 1 <= max_file_bytes <= MAX_SEARCH_BYTES: raise ValueError('Invalid max_file_bytes')
     resolved = resolve_find_root(path, jailbreak)
     start = time.monotonic()
     matches = []
     reasons = []
-    counts = {'entries': 0, 'files': 0, 'directories': 0, 'symlinks': 0}
+    counts = {'entries': 0, 'files': 0, 'directories': 0, 'symlinks': 0,
+              'bytes': 0, 'skipped_large': 0, 'skipped_unreadable': 0}
     stopped = False
     # One directory fd at a time: the descriptor table here is small (256), so
     # queueing every sibling's fd would exhaust it on a wide tree. Descendants
@@ -560,15 +572,45 @@ def tool_find(args):
                 try: st = os.stat(name, dir_fd=fd, follow_symlinks=False)
                 except OSError: continue
                 mode = st.st_mode
+                regular = stat.S_ISREG(mode)
                 if stat.S_ISDIR(mode): counts['directories'] += 1
                 elif stat.S_ISLNK(mode): counts['symlinks'] += 1
-                elif stat.S_ISREG(mode): counts['files'] += 1
-                if fnmatch.fnmatchcase(name, pattern):
-                    if not stat.S_ISREG(mode) or st.st_size >= min_bytes:
-                        matches.append({'path': prefix + '/' + name, 'type': kind_of(mode),
-                                        'size': st.st_size if stat.S_ISREG(mode) else None})
-                        if len(matches) >= limit:
-                            reasons.append('limit'); stopped = True; break
+                elif regular: counts['files'] += 1
+                # The size range gates regular files only; directories and
+                # symlinks are unaffected by it.
+                size_ok = True
+                if regular:
+                    if st.st_size < min_bytes: size_ok = False
+                    if max_bytes and st.st_size > max_bytes: size_ok = False
+                elif min_bytes or max_bytes:
+                    # A size bound is about file sizes, so directories and
+                    # symlinks are not reported while one is in force.
+                    size_ok = False
+                named = bool(pattern) and fnmatch.fnmatchcase(name, pattern)
+                hit = False; line = None; excerpt = None; trimmed = False
+                if content and regular and size_ok:
+                    if st.st_size > max_file_bytes:
+                        counts['skipped_large'] += 1
+                    else:
+                        try: text, read_bytes = read_capped(fd, name, max_file_bytes)
+                        except (OSError, ValueError):
+                            counts['skipped_unreadable'] += 1
+                        else:
+                            counts['bytes'] += read_bytes
+                            at = text.find(content)
+                            if at >= 0:
+                                hit = True
+                                line = text.count('\n', 0, at) + 1
+                                excerpt, trimmed = excerpt_line(text, at)
+                if size_ok and (named or hit):
+                    matches.append({'path': prefix + '/' + name, 'type': kind_of(mode),
+                                    'size': st.st_size if regular else None,
+                                    'mode': oct(stat.S_IMODE(mode)), 'uid': st.st_uid,
+                                    'gid': st.st_gid, 'mtime': int(st.st_mtime),
+                                    'name_match': named, 'line': line,
+                                    'excerpt': excerpt, 'excerpt_truncated': trimmed})
+                    if len(matches) >= limit:
+                        reasons.append('limit'); stopped = True; break
                 # Only entries whose lstat says "directory" are queued, each
                 # reopened with O_NOFOLLOW, so a symlink is reported but never
                 # entered: the walk cannot leave the tree or loop.
@@ -583,8 +625,11 @@ def tool_find(args):
             'truncated': bool(unique), 'reasons': unique,
             'entries_scanned': counts['entries'], 'files': counts['files'],
             'directories': counts['directories'], 'symlinks_not_followed': counts['symlinks'],
+            'bytes_read': counts['bytes'], 'skipped_large': counts['skipped_large'],
+            'skipped_unreadable': counts['skipped_unreadable'],
             'elapsed_seconds': round(time.monotonic() - start, 3),
-            'limits': {'matches': limit, 'depth': depth_max, 'seconds': seconds, 'entries': MAX_FIND_ENTRIES},
+            'limits': {'matches': limit, 'depth': depth_max, 'seconds': seconds,
+                       'entries': MAX_FIND_ENTRIES, 'file_bytes': max_file_bytes},
             'read_only': True}
 
 def tool_read_chunk(args):

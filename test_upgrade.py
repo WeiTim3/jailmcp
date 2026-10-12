@@ -731,7 +731,8 @@ class UpgradeHelperTests(UpgradeCase):
                     'mobile_setup.py': '78ed4a0f75a16ba15298649713db62d3434c86e894ba0a3cace5385907389550'}
 
         listed = {'0.3.6-1': '1d64cb7fe9de833751e0dc3d7a3fcb123b108afd99df07c27ffbed3b0539c385',
-                  '0.3.9-1': 'e74d21d5cc1189911617d9e2b5f6e28dead7466f7cf68082206f9c9cc3aaaf43'}
+                  '0.3.9-1': 'e74d21d5cc1189911617d9e2b5f6e28dead7466f7cf68082206f9c9cc3aaaf43',
+                  '0.3.10-1': '5401eca53b7446cedc5a8d82c7d3799fad1fc9e1aa219bfaea4bacdfd93d221d'}
         with patch.object(lc, 'HASHES', dict(PACKAGED)):
             for label, bridge in listed.items():
                 self.assertEqual(lc.KNOWN_SETS[label], hashes(bridge))

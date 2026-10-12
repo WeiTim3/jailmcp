@@ -1,11 +1,23 @@
-# OpenMinis-Jailbreak 0.3.10-1+experimental
+# OpenMinis-Jailbreak 0.3.11-1+experimental
 
 以 launchd 服务形式运行、通过本机 MCP 向 OpenMinis 提供越狱侧能力的服务包。
 OpenMinis 本体不需要越狱权限、不需要注入、不需要改签名。
 
 完整说明见项目自述文件；本文档随包安装，只记录版本相关信息。
 
-## 本版改动（0.3.10）
+## 本版改动（0.3.11）
+
+`jb_find` 增强（bridge 版本提升到 `0.3.9`）。除了按名字搜，现在还能：
+
+- **按内容搜**：`content="..."` 在文件内查找，返回 1 起始行号与有界摘录，受 `max_file_bytes` 约束；
+- **按大小过滤**：`min_bytes` / `max_bytes` —— 只作用于普通文件；带大小条件时不再列出目录；
+- **元信息**：每个匹配返回 `mode` / `uid` / `gid` / `mtime`（另有 `size`、`name_match`、`line`、`excerpt`）。
+
+仍为只读、有界（墙钟 / 条目数 / 深度 / 匹配数 / 单文件字节），符号链接目录只报告不进入。
+
+`launcher.py` / `maintenance_runtime.py` / `mobile_setup.py` 未变，只有 `bridge.py` 变了；升级白名单已含 0.3.10 那套运行库。
+
+## 历史（0.3.10）
 
 `jb_find` 现在**直接接受设备路径**，自动映射到系统目录（bridge 版本提升到 `0.3.8`）：
 
@@ -77,7 +89,7 @@ OpenMinis 本体不需要越狱权限、不需要注入、不需要改签名。
 
 ## 版本与兼容
 
-- 包版本 `0.3.10-1+experimental`；移动端 bridge `0.3.8`；MCP API `3`；工具 26 个。
+- 包版本 `0.3.11-1+experimental`；移动端 bridge `0.3.9`；MCP API `3`；工具 26 个。
 - 支持从 0.3.3-1、0.3.5-1、0.3.6、0.3.7、0.3.8 原地升级（白名单内置），token 完整保留。
 - 更旧的版本（如 0.3.2 系列）仍需先卸载再安装。
 - 安装后完整重启并重新越狱的自动恢复已真机验证（jbroot 变化后服务自动恢复）。

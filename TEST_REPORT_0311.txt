@@ -1,0 +1,28 @@
+OpenMinis-Jailbreak 0.3.11-1+experimental — 测试报告（jb_find：内容搜索 / 大小过滤 / 元信息）
+================================================================================
+DEB: OpenMinis-Jailbreak_0.3.11-1+experimental_iphoneos-arm64e.deb
+SHA256: 97695bac2a361c4afcc609a6d12fdd5b454d35e3ac640df6374cc505be299e89
+可复现构建: 连续两次构建字节完全一致
+源码归档: OpenMinis-Jailbreak_0.3.11-1+experimental-source.tar.gz（见 SHA256SUMS）
+移动端 payload: 只有 bridge.py 变化（VERSION 0.3.8 -> 0.3.9，sha256 e4325d728807ead392e82c1bf1b63169e82069b7db30f3fae052c194d13cba94）；
+         launcher.py / maintenance_runtime.py / mobile_setup.py 与 0.3.6 逐字节相同。
+         升级白名单新增 KNOWN_SETS['0.3.10-1']。
+
+一、本版改动（0.3.11）
+--------------------
+jb_find 增强：按名字 glob 和/或字面内容搜索（返回 1 起始行号 + 有界摘录，受 max_file_bytes 约束）；
+新增 size range（min_bytes/max_bytes，只作用于普通文件，带条件时不再列出目录）；
+每个匹配返回 mode/uid/gid/mtime（另有 size、name_match、line、excerpt）。仍只读、有界。
+
+二、测试
+--------
+233 项全部通过：test_package 23、test_filetools 74、test_safety 31、test_upgrade 56、
+test_api 39、test_supervisor 10。
+
+三、本轮真机验证
+----------------
+- 自更新通道部署 bridge 0.3.9：stage -> validate -> apply，约 6 秒，healthy。
+- 名字搜索 DumpDecrypter：5 个 ipa，均带 mode=0o644 / uid=501 / gid=501 / mtime。
+- 内容搜索 <?xml：命中含该串的 plist（读取 465967 字节）。
+- 大小过滤 min_bytes=1MiB：只列出 5 个普通文件（不再混入目录）。
+- 纯内容搜索 + max_file_bytes=4096：5 个过大文件被正确跳过。
