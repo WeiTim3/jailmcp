@@ -32,11 +32,7 @@ jobs:
       - name: Source archive
         run: |
           V=$(python3 -c "import package_lifecycle as l; print(l.VERSION)")
-          tar czf "OpenMinis-Jailbreak_${V}-source.tar.gz" \
-            build.py package_lifecycle.py removal_helper.py mobile_setup.py \
-            README.md README.zh-CN.md TEST_REPORT_0361.txt \
-            test_package.py test_safety.py test_filetools.py test_upgrade.py test_supervisor.py test_api.py run_baseline_api_tests.py \
-            source-v030
+          python3 source_archive.py
           ls -l OpenMinis-Jailbreak_*.deb "OpenMinis-Jailbreak_${V}-source.tar.gz"
 
       - name: Checksums
@@ -77,11 +73,7 @@ jobs:
         run: |
           python3 build.py
           V=$(python3 -c "import package_lifecycle as l; print(l.VERSION)")
-          tar czf "OpenMinis-Jailbreak_${V}-source.tar.gz" \
-            build.py package_lifecycle.py removal_helper.py mobile_setup.py \
-            README.md README.zh-CN.md TEST_REPORT_0361.txt \
-            test_package.py test_safety.py test_filetools.py test_upgrade.py test_supervisor.py test_api.py run_baseline_api_tests.py \
-            source-v030
+          python3 source_archive.py
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}

@@ -119,6 +119,28 @@ class SafetyTests(unittest.TestCase):
             self.assertNotIn('CLEAN-INSTALL ONLY',str(caught.exception))
             pre.assert_called_once();known.assert_called_once()
 
+    def test_recovery_paths_never_read_user_state_or_run_user_code_as_root(self):
+        # 0.3.7: the abort path and the recovery helper are root code. They must
+        # never read the token (not even to fingerprint it), never touch
+        # token/config/audit, and never import or execute user-writable code.
+        # The mobile active pointer moves only through the UID501 helper.
+        source = Path(lc.__file__).read_text()
+        block = source[source.index('def previous_directory():'):source.index('def confirm_listener_released():')]
+        self.assertIn('def postrm_abort(action):', block)
+        self.assertIn('def restore_main(argv):', block)
+        self.assertIn('def retain_previous(meta):', block)
+        for forbidden in ('MOBILE_FINGERPRINT', 'import maintenance_runtime', 'import bridge',
+                          'import launcher', 'import mobile_setup', 'exec(', 'rt.token()',
+                          'read_at(', 'fingerprint('):
+            self.assertNotIn(forbidden, block)
+        self.assertIn('restore_pointer', block)
+        self.assertIn('restore_pointer(pointer)', block)
+        self.assertNotIn('mobile_out(', block)
+        self.assertNotIn('mobile_arg(', block)
+        self.assertEqual(lc.PREVIOUS, Path('/usr/local/lib/openminis-jb-previous'))
+        self.assertEqual(lc.PREV_EXEC, '/usr/local/bin/openminis-jb-restore-runtime')
+        self.assertNotEqual(lc.PREVIOUS, lc.TRANSACTION)
+
     def test_abort_upgrade_hooks_do_not_clean(self):
         for phase,action in [('prerm','upgrade'),('prerm','failed-upgrade'),('postrm','upgrade'),('postrm','failed-upgrade'),('postrm','abort-install'),('postrm','abort-upgrade'),('postrm','disappear'),('postinst','abort-remove')]:
             with patch.object(lc,'preflight') as pre,patch.object(lc,'removal') as clean:

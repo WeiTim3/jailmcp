@@ -34,6 +34,16 @@ Description: OpenMinis-Jailbreak local API3 mobile service (experimental)
 ''')
     life=(HERE/'package_lifecycle.py').read_text().replace('HASHES = {}  # Filled by reproducible builder.','HASHES = '+repr(hashes)).replace("REMOVAL = ''  # Filled by reproducible builder.","REMOVAL = "+repr((HERE/'removal_helper.py').read_text()))
     ast.parse(life,feature_version=(3,9))
+    # Root-executable recovery helper (0.3.7): the same module with its control
+    # entry point replaced by the restore CLI. Build.py asserts the split marker
+    # is unique, so the generated file can never be truncated by accident.
+    MARKER='\n# === package_lifecycle control-script entry point ===\n'
+    assert life.count(MARKER)==1,'control-script entry marker must appear exactly once'
+    helper=('#!/usr/bin/python3\n'+life.split(MARKER)[0]+
+        "if __name__ == '__main__':\n    sys.exit(restore_main(sys.argv[1:]))\n")
+    ast.parse(helper,feature_version=(3,9))
+    binary=STAGE/'usr/local/bin/openminis-jb-restore-runtime'
+    binary.parent.mkdir(parents=True); binary.write_text(helper)
     for phase in ('preinst','postinst','prerm','postrm'):
         text="#!/bin/sh\nexec /usr/bin/python3 -I -B - "+phase+" \"$@\" <<'OPENMINIS_PACKAGE_PY'\n"+life+"\nOPENMINIS_PACKAGE_PY\n"
         if phase == 'postrm':
@@ -45,7 +55,9 @@ Description: OpenMinis-Jailbreak local API3 mobile service (experimental)
     md5=[]
     for p in sorted(STAGE.rglob('*')):
         if p.is_dir(): p.chmod(0o755)
-        elif p.parent!=control: p.chmod(0o644); md5.append(hashlib.md5(p.read_bytes()).hexdigest()+'  '+str(p.relative_to(STAGE)))
+        elif p.parent==control: pass
+        elif p==binary: p.chmod(0o755); md5.append(hashlib.md5(p.read_bytes()).hexdigest()+'  '+str(p.relative_to(STAGE)))
+        else: p.chmod(0o644); md5.append(hashlib.md5(p.read_bytes()).hexdigest()+'  '+str(p.relative_to(STAGE)))
     (control/'md5sums').write_text('\n'.join(md5)+'\n')
     for p in STAGE.rglob('*'): os.utime(p,(int(EPOCH),int(EPOCH)))
     os.utime(STAGE,(int(EPOCH),int(EPOCH)))

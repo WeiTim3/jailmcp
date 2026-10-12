@@ -35,12 +35,37 @@ class PackageTests(unittest.TestCase):
             names = [m.name for m in t]
             for m in t:
                 self.assertEqual((m.uid,m.gid),(0,0))
-                self.assertEqual(m.mode,0o755 if m.isdir() else 0o644)
+                # 0.3.7: only the root recovery helper is executable; every other
+                # payload file stays 0644 and every directory 0755.
+                executable = m.isdir() or m.name.endswith('/openminis-jb-restore-runtime')
+                self.assertEqual(m.mode,0o755 if executable else 0o644)
                 self.assertFalse(m.issym() or m.islnk())
             self.assertFalse(any('/Library' in n or '.bridge-state' in n or n.endswith('/token') for n in names))
             self.assertFalse(any(n.endswith(('.deb','.pyc','test_package.py')) for n in names))
             for name in ('launcher.py','maintenance_runtime.py','bridge.py'):
                 self.assertEqual(t.extractfile('./usr/local/lib/openminis-jb/'+name).read(), (HERE/'source-v030'/name).read_bytes())
+            # The helper is this module with the control entry point replaced by the
+            # restore CLI: it must be a standalone 3.9 script, never a control script.
+            helper = t.extractfile('./usr/local/bin/openminis-jb-restore-runtime').read().decode()
+            self.assertTrue(helper.startswith('#!/usr/bin/python3\n'))
+            ast.parse(helper, feature_version=(3,9))
+            self.assertIn("sys.exit(restore_main(sys.argv[1:]))", helper)
+            self.assertIn('def restore_main(argv):', helper)
+            self.assertIn('retain_previous', helper)
+            self.assertNotIn('# === package_lifecycle control-script entry point ===', helper)
+            self.assertNotIn('OPENMINIS_PACKAGE_PY', helper)
+            # The shipped helper must embed exactly this module (same filled
+            # hashes, same removal helper) with the restore CLI as its entry.
+            namespace = {'__name__': 'helper_test'}
+            exec(compile(helper, '<helper>', 'exec'), namespace)
+            packaged = dict((name, hashlib.sha256(
+                (HERE/name if name=='mobile_setup.py' else HERE/'source-v030'/name).read_bytes()).hexdigest())
+                for name in lc.RUNTIME)
+            self.assertEqual(namespace['HASHES'], packaged)
+            self.assertEqual(namespace['VERSION'], lc.VERSION)
+            self.assertEqual(namespace['REMOVAL'], (HERE/'removal_helper.py').read_text())
+            self.assertEqual(namespace['PREVIOUS'], Path('/usr/local/lib/openminis-jb-previous'))
+            self.assertNotIn('main(sys.argv[1], sys.argv[2:])', helper)
         meta = subprocess.check_output(['dpkg-deb','-f',str(build.OUT)]).decode()
         self.assertIn('Version: ' + build.VERSION, meta)
         self.assertEqual(lc.RECEIPT_DATA, ('OpenMinis-Jailbreak clean-install ' + build.VERSION + '\n').encode())

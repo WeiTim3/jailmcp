@@ -1,0 +1,162 @@
+OpenMinis-Jailbreak 0.3.7-1+experimental — 测试报告（升级中断恢复 + 一键回退）
+================================================================================
+DEB: OpenMinis-Jailbreak_0.3.7-1+experimental_iphoneos-arm64e.deb
+SHA256: e07aa2a2f6ef8d3ba6049b09f9d06372aa779446a9c12265b48f1d72d61252da
+可复现构建: 连续两次构建字节完全一致（SOURCE_DATE_EPOCH 固定、dpkg-deb --root-owner-group -Zgzip -z9）
+源码归档: OpenMinis-Jailbreak_0.3.7-1+experimental-source.tar.gz（openminis-jb/ 前缀，见 SHA256SUMS）
+真机演练包: OpenMinis-Jailbreak_0.3.7-ABORT-TEST.deb（**仅供测试，不进 SHA256SUMS、不发布**）
+SHA256: 609ba2aa0f213e59a6cdc23f49ac41c16ae51749d081fc3c5fcc8712d40c67fb
+         由 make_abort_test_deb.py 生成：control 脚本与本版一致，data.tar.gz 中部被破坏
+         （64 字节 XOR 0x5A），dpkg 会在解包阶段失败并调用 postrm abort-upgrade。
+         使用说明与预期见 ABORT_TEST_0371.md。
+移动端 payload: launcher.py / maintenance_runtime.py / bridge.py / mobile_setup.py 与已部署的
+         0.3.6-1 逐字节相同（bridge 版本仍为 0.3.6，25 个工具，MCP API 仍为 3）。
+         本版只改 control 脚本（package_lifecycle.py）与构建/文档。
+         因此已部署的 0.3.6 会命中“本版打包集合”而通过运行时白名单（见下）。
+
+一、本版目标
+------------
+修掉 0.3.6 原地升级留下的两个“升级之后无路可走”的残留风险：
+  RISK 1  dpkg 在 preinst 与 postinst 之间中断（典型是载荷解包失败）时，dpkg 会调用**新包**的
+          `postrm abort-upgrade <旧版本号>`，而 0.3.6 对它是刻意的 no-op，于是服务可能停在停止状态、
+          快照留在磁盘上。
+  RISK 2  “升级失败/表现不对”时没有任何受支持的回退通道：dpkg 降级会被 preinst 拒绝
+          （旧包的运行时白名单不可能认识新版本的哈希），0.3.6 之前的包更是直接拒绝 upgrade。
+
+二、RISK 1：postrm abort-upgrade / abort-install
+-----------------------------------------------
+新增处理（package_lifecycle.py: postrm_abort），dpkg 调用顺序不变：preinst upgrade（快照+有界停止）
+→ 解包失败 → postrm abort-upgrade <old-version>。
+
+1. 只认“同一 boot 的未提交快照”：
+   - 无 /usr/local/lib/openminis-jb-transaction → 一行 NOTICE，退出 0，零改动；
+   - transaction_meta() 结构非法（schema/to_version/boot/哈希/指针/salt 任一不符）→ 一行 NOTICE，保留现场；
+   - committed=true（此前 configure 已成功）→ 一行 NOTICE，不消费快照；
+   - boot_stamp() 不可得，或 meta.boot != 当前 boot → 一行 NOTICE，不动；
+   - 快照成员（4 个 runtime + plist + receipt）逐个 sha256 校验，**全部通过后才落盘**：
+     load_snapshot() 先整体读出并校验，apply_snapshot() 才写盘 → 不会出现“改了一半”。
+2. 还原内容：4 个 root 运行时文件（0644，原子 rename）→ 服务 plist（逐字节，原子）→ 所有权收据
+   （仅在快照里记录时，0600；解包把它删掉时可恢复，这正是 dpkg 回滚后旧包 prerm 继续可用所需）
+   → 移动端 active 指针（UID501 助手 MOBILE_RESTORE，校验 sha/版本目录存在后原子写回）→
+   重启服务（必要时先 bootout）→ 认证健康检查。
+3. 只依赖快照：解包可能已把 /usr/local/lib/openminis-jb 的文件删掉、截断或写成垃圾。还原路径
+   先 ensure_store() 重建目录（仅在父目录 guard 通过时），再写回校验过的字节；**不读取也不复用
+   解包结果**。测试覆盖 truncate（文件被截断）/ missing（目录被删）/ plist 被删 三种情况。
+4. 绝不卡住 dpkg：postrm 的 shell 包装本来就 `exit 0`，本路径自身也保证不抛异常——最外层
+   `except BaseException` 兜底为一行 NOTICE。所有分支都**只打印一行**（成功一行结论 / 否则一行 NOTICE）。
+5. 幂等：重复执行结果相同（第二次同样校验、写回同样的字节、重启后健康）。
+6. 绝不碰 token / config / audit；root 路径不导入/不执行移动端代码，移动端助手仍以 UID501 运行。
+7. abort-install 走同一路径（干净安装失败时通常没有快照 → 一行 NOTICE，零改动）。
+
+三、RISK 2：保留“上一个已知良好运行时” + root 恢复助手
+-----------------------------------------------------
+1. 成功升级后不再直接丢弃快照：commit() 在标记 committed 之后、删除事务之前，把**已验证**的
+   升级前状态复制到 /usr/local/lib/openminis-jb-previous（root 所有 0700）：
+     meta.json（0600）：schema=openminis-jb-previous-1、created、boot、from_version/from_label、
+                        to_version、4 个 runtime 哈希、plist 哈希、旧 active 指针
+     runtime/{launcher,maintenance_runtime,bridge,mobile_setup}.py（0600）
+     plist（0600，旧 plist 原文）
+   - 先整体 sha256 校验（load_snapshot）再写；先写到同父目录下的 .openminis-previous-<rand> 暂存目录，
+     再用 rename 整体替换，旧目录最后删除 → 不会出现半成品；崩溃残留的暂存目录带固定前缀，
+     下次会被清理。
+   - 保留动作是 best effort：服务已通过健康检查，保留失败只打印 NOTICE 并**保留 committed 快照**，
+     绝不因此让升级失败。
+   - 第二次成功升级会用新内容整体替换保留区（“最新替换较旧”）。
+   - 保留区**严格独立于 in-flight 事务**：transaction 逻辑从不读写 previous，abort 只读 transaction，
+     助手只读 previous；卸载时仅当 previous_meta() 校验通过才删除，否则保留并告警。
+   - 保留区不含 token/config/audit（连指纹也不含）。
+2. 新增 root 可执行助手 /usr/local/bin/openminis-jb-restore-runtime（随包安装，tarball 内 0755；
+   由 build.py 用同一份 package_lifecycle.py 生成，控制入口替换为 restore CLI，构建时断言
+   分割点唯一且 3.9 可解析）：
+     openminis-jb-restore-runtime [--dry-run] [--pointer-only]
+   - 先 previous_directory()（必须 root 所有、非符号链接、0700）+ previous_meta()（结构校验）
+     + load_snapshot(manifest, PREVIOUS)（逐文件 sha256），全部通过后才动手；
+   - plist 形状仍用既有 equivalent() 校验（不放宽）；不符即拒绝；
+   - 还原 4 个运行时文件、plist、active 指针（先停服务避免与监督器竞争），重启并认证健康检查；
+     逐条打印它做了什么（dry-run 只打印计划）；
+   - --pointer-only 只还原移动端指针（不动 root 运行时/plist）；
+   - manifest 缺失/损坏/未知 schema/权限或类型异常、快照与 manifest 不一致 → 拒绝（退出 1）；
+   - 幂等；**不读取也不打印 token**（root 侧不调用指纹助手），不写 token/config/audit；
+   - 只**提示**存在 in-flight 事务，绝不读取/修改/删除它；dpkg 记录的版本与 manifest 的 to_version
+     不一致时打印一行说明后继续。
+3. 如实说明（已写入两个 README）：助手回到的是**设备上的旧运行时**，dpkg 仍记录**更新的包版本**
+   （其文件确实安装成功）。因此**不建议**用安装旧 .deb 的方式降级（旧包白名单不认识新哈希，
+   preinst 会在改动前拒绝——这正是 RISK 2 的起因），也不要用 --force-downgrade 绕过校验。
+   推荐流程：先 `--dry-run`，需要时 `--pointer-only` 或完整回退，然后**重装当前/更新的正式包**
+   （重装即一次正常原地升级，token/配置/审计不丢）。
+
+四、本机测试（Python 3.12.15，Linux；离线，无真机、无生产 token）
+----------------------------------------------------------------
+test_package.py     Ran 19  OK   （control/data、可复现构建、sh -n、Python 3.9 语法、生命周期单测；
+                                  新增：助手必须是 0755 且为独立 3.9 脚本、不得包含 control 入口）
+test_safety.py      Ran 31  OK   （新增 test_recovery_paths_never_read_user_state_or_run_user_code_as_root：
+                                  abort/助手/保留区代码块不得出现 MOBILE_FINGERPRINT / rt.token() /
+                                  移动端 import / exec(，只允许经 UID501 的 restore_pointer；
+                                  并固化 PREVIOUS 与 PREV_EXEC 路径；其余 30 项沿用）
+test_filetools.py   Ran 74  OK   （未改动）
+test_upgrade.py     Ran 56  OK   （0.3.6 的 26 项全部保留通过，外加本版 30 项，见下）
+test_api.py         Ran 39  OK   （未改动）
+test_supervisor.py  Ran 10  OK   （真实 UID501 子进程、信号、端口；约 51s）
+合计 229 项全部通过（0.3.6 为 198 项）。
+
+test_upgrade.py 的 30 项新增（离线模拟完整 dpkg 序列；fixtures 中 launchd/健康检查/UID501 状态
+全部为真实文件 + 真实嵌入式助手代码，仅 launchctl 为替身）：
+ A. 升级中断恢复 12 项
+  - 有效未提交同 boot 快照 + 解包后文件被截断、收据被删 → 4 个运行时文件与 plist 逐字节还原、
+    收据还原、active 指针还原、服务重启并健康检查、只打印一行成功结论、快照原样保留（committed=false）、
+    退出 0（未抛异常）、token/config/audit 字节不变；
+  - 幂等：第二次执行结果与第一次完全一致（含 meta.json 字节）；
+  - 无快照 / 已 committed / 其它 boot / boot 不可知 / 结构非法（schema 被换）→ 均一行 NOTICE、零改动；
+  - 快照损坏（runtime 文件被追加字节，或 meta 中哈希被改成非法值）→ 拒绝还原，磁盘保持“解包后”的
+    损坏状态（证明是“先校验后落盘”），快照原样保留；
+  - 部分解包三种形态（截断 / 目录被删 / plist 被删）都能完整还原；
+  - 中断后紧接一次正常升级仍能走完（dpkg 没被卡住），且该次升级照常写入保留区；
+  - 服务在 abort 前已自行恢复（launchd KeepAlive）时，也会被重启到旧版本并验证健康。
+ B. 保留区 6 项
+  - 成功升级后保留区存在、0700/root、manifest 字段（schema/from_label/from_version/to_version/boot/
+    runtime/plist/pointer）逐项正确、文件清单与 0600 权限正确、in-flight 事务仍被删除、
+    token/config/audit 未被复制进去、字节不变；
+  - 第二次成功升级用新内容整体替换旧保留区，且没有暂存残留；
+  - 失败的 configure 不产生保留区；保留区与 in-flight 事务互不影响（失败遗留的快照被丢弃/替换时
+    保留区字节不变）；
+  - postrm remove/purge：manifest 校验通过才删除保留区；校验不通过则保留并告警。
+ C. 恢复助手 11 项
+  - 完整回退：root 运行时/plist/指针全部回到升级前、服务重启并健康检查、保留区保留、
+    token/config/audit 字节不变、确实执行了 bootout+bootstrap；
+  - --dry-run：零改动（磁盘与服务调用都不变）；
+  - --pointer-only：root 运行时与 plist 不变，只还原指针；
+  - 幂等；快照与 manifest 不一致 → 退出 1 且零改动；manifest 损坏/未知 schema/非 0700/缺失 → 退出 1
+    且零改动；保留的 plist 形状不符（equivalent 返回 False）→ 退出 1 且零改动；
+    未知参数 → 退出 2；--help → 退出 0 并打印用法；存在 in-flight 事务 → 只提示、事务字节不变；
+    dpkg 记录版本与 manifest 不一致 → 打印说明后仍然完成回退；
+  - 0.3.6 → 0.3.7（payload 逐字节相同）场景下，回退的可见效果是 active 指针与重启。
+ D. 白名单固化 1 项
+  - 本版打包 payload 与已部署 0.3.6-1 的四个哈希**逐字节相同**（哈希常量来自实际发行的 0.3.6 deb），
+    因此 0.3.6 → 0.3.7 会命中 “packaged 0.3.7-1+experimental” 分支；若将来改动任何运行时文件，
+    该测试会失败，提示必须先扩充白名单。
+
+五、构建与产物
+--------------
+ build.py           生成 .deb（含 /usr/local/bin/openminis-jb-restore-runtime，0755；其余数据文件
+                    与目录仍为 0644/0755），校验 3.9 语法；连续两次构建字节一致。
+ source_archive.py  生成确定性源码归档（成员排序、固定 mtime/uid/gid、gzip mtime=0）并重写 SHA256SUMS。
+ make_abort_test_deb.py  生成 ABORT-TEST 演练包（重建正式包后仅替换损坏的 data.tar.gz 成员，
+                    保持 ar 结构与成员长度不变），SHA256SUMS 断言不含 ABORT-TEST。
+ SHA256SUMS         仅含正式 .deb 与源码归档两行。
+
+六、未验证项（真机）
+--------------------
+1. 真机 `dpkg -i` 解包失败后 dpkg 调用 `postrm abort-upgrade` 的实际时序与退出码（本机测试为
+   离线模拟：直接调用 postrm 实现，stdout 断言“恰好一行”，并另断言 postrm 脚本永远 exit 0）；
+   建议用 ABORT_TEST_0371.md 里的演练包在设备上确认：服务恢复健康、dpkg -l 仍为旧版本、
+   token/config/audit 字节不变、快照（committed=false）保留。
+2. dpkg 自身的文件回滚与我们的快照还原是否会在真机上互相干扰（两者目标一致：旧运行时）——
+   离线测试只能证明我们这一侧幂等且只依赖快照。
+3. launchctl bootout/bootstrap 在 user/501 域的真实时序（沿用 0.3.3/0.3.5 已验证路径）。
+4. 恢复助手的 --dry-run/--pointer-only/完整回退在真机上的输出（assistant 需要 root 与 jbroot 可解析；
+   本机测试以 patch 提供 root 与 UID501 替身）。
+5. Python 3.9 仅做语法解析（设备为 3.9.9）：本版新增代码未使用 `os.listdir(fd)` 等 3.9 语义差异点
+   （保留区/事务的目录列举一律用 `os.scandir(path)`，不使用会被关闭的 fd），
+   但真机仍需确认。
+6. 测试为离线运行（无真机、无生产 token、无网络）；测试进程以 root 运行（fixture 需要 0700 目录），
+   与 0.3.6 报告一致。

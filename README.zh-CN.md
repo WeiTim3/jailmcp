@@ -1,9 +1,55 @@
-# OpenMinis-Jailbreak 0.3.6-1+experimental
+# OpenMinis-Jailbreak 0.3.7-1+experimental
 
 以 launchd 服务形式运行、并通过本机 MCP 向 OpenMinis 提供越狱侧能力的服务包。
 OpenMinis 本体不需要越狱权限、不需要注入。
 
-## 本版改动（0.3.6）
+## 本版改动（0.3.7）
+
+只修改 control 脚本（移动端 `bridge.py`、`launcher.py`、`maintenance_runtime.py`、`mobile_setup.py`
+与本版之前的 0.3.6 逐字节相同），共修掉两个“升级之后无路可走”的残留风险：
+
+1. **升级在解包阶段中断的自动恢复**：dpkg 在 `preinst` 之后、`postinst` 之前失败时（最常见是载荷
+   解包失败），会调用本版本的 `postrm abort-upgrade <旧版本号>`。现在该路径会：
+
+   - 只用未提交、**同一 boot** 的快照与其 manifest（不读取解包结果）把 4 个 root 运行时文件与
+     plist **逐字节**还原——每个文件写盘前先校验 sha256，且先整体校验再落盘；
+   - 恢复移动端 active 指针，重启服务并做认证健康检查；
+   - 只打印**一行**结论；无快照、快照已提交、属于其它 boot、结构或哈希不可信时，只打印一行
+     NOTICE、什么都不改、退出码为 0——**绝不卡住 dpkg**；
+   - 幂等；绝不读、不写、不打印 token，也绝不碰 config / audit。
+
+   由于还原只依赖快照，即使失败的解包已经把 `usr/local/lib/openminis-jb` 里的文件删掉、截断或
+   写成垃圾，也能重建出正确的运行时。
+
+2. **支持的回退通道（不再“升级后无法回头”）**：成功升级后不再直接丢弃快照，而是把升级前的
+   4 个运行时文件、旧 plist 与旧 active 指针保留到 `/usr/local/lib/openminis-jb-previous`
+   （root 所有、0700，带显式 manifest：from/to 版本、全部 sha256、boot id、旧指针），并随包安装
+   root 恢复助手：
+
+   ```
+   /usr/local/bin/openminis-jb-restore-runtime [--dry-run] [--pointer-only]
+   ```
+
+   助手先按 manifest 逐个校验 sha256，再还原 4 个运行时文件、服务 plist 与 active 指针，随后重启
+   服务并做健康检查，**逐条打印它做了什么**；`--dry-run` 只校验与打印、不落任何字节；`--pointer-only`
+   只还原移动端指针；manifest 缺失/损坏/未知 schema/权限异常、或快照与 manifest 不一致时**拒绝执行**
+   （退出 1）；幂等；**不读取也不打印 token**，不写 token/config/audit；只提示存在的 in-flight 快照，
+   绝不读取、修改或删除它。
+
+   **如实说明**：助手回到的是设备上的旧运行时，而 dpkg 仍记录**更新的包版本**（它的文件确实已安装
+   成功），所以**安装旧 `.deb` 不是推荐路径**——旧包的运行时白名单不可能认识新版本的哈希，`preinst`
+   会在改动前拒绝（这正是本次要修的第二个风险的起因）。推荐流程：先用助手回退
+   （`--dry-run` → 需要时 `--pointer-only` 或完整回退），再**重装当前（或更新）的正式包**，
+   重装即一次正常原地升级，token／配置／审计都不会丢。
+
+   保留区与 in-flight 事务严格分离：`openminis-jb-transaction` 只描述“进行中”的一次升级（含
+   指纹与 `committed` 标记），`openminis-jb-previous` 只保存“已成功”升级前的状态（不含任何用户
+   数据指纹）；两侧互不读写。卸载时仅当 manifest 校验通过才删除保留区，否则保留并告警。
+
+真机演练可用 `OpenMinis-Jailbreak_0.3.7-ABORT-TEST.deb`（故意的损坏载荷，控制脚本与本版一致，
+**仅供测试、不发布、不进校验和**），用法与预期见 `ABORT_TEST_0371.md`。
+
+## 历史改动（0.3.6）
 
 **支持原地升级，不再需要先卸载。** 在 Sileo 里直接更新即可：
 
@@ -66,11 +112,15 @@ OpenMinis 本体不需要越狱权限、不需要注入。
 - `preinst upgrade`：白名单校验已安装运行时与 plist；快照旧运行时／plist／active 指针；有界停止服务。
 - `postinst configure`：UID501 创建 canonical 目录、私有 token/state 与固定 launchd 服务，并做健康检查；
   若是一次升级，则对账移动端版本（必要时原子切换 active 指针）后启动服务并验证，
-  成功提交、失败按快照回滚并重启旧版本。
+  成功则**把升级前状态保留到 `openminis-jb-previous`（0700）**并删除 in-flight 快照；
+  失败则按快照回滚并重启旧版本。
 - `prerm remove`：只停止并验证本包同标签服务及其自有子进程；不删 token/state。
+- `postrm abort-upgrade` / `abort-install`：dpkg 在解包阶段中断时的恢复路径（见上）：只用同一 boot 的
+  未提交快照逐字节还原 root 运行时与 plist、恢复 active 指针、重启并健康检查；任何疑问只打印一行
+  NOTICE 并以 0 退出。**不碰 token/config/audit，绝不让 dpkg 卡住。**
 - `postrm remove/purge`：依据 root 所有的凭据，只清理本包的 `.bridge-state`
-  （token、配置、版本、审计、锁、临时文件）；保留 canonical 目录内的普通项目文件。
-  缺失文件、重复执行与可选清理失败仅警告，不让脚本失效。
+  （token、配置、版本、审计、锁、临时文件）与 manifest 校验通过的 `openminis-jb-previous`；
+  保留 canonical 目录内的普通项目文件。缺失文件、重复执行与可选清理失败仅警告，不让脚本失效。
 
 监督器信号处理只设置 STOP 标志；退出时对自有子进程组做有界 TERM/KILL；
 子进程另带父进程消失看门狗，即使监督器被强制结束也会立即退出并释放端口。
@@ -86,9 +136,10 @@ OpenMinis 侧 MCP 服务器填 `http://127.0.0.1:18765/mcp`，请求头 `Authori
 ## 版本兼容
 
 0.3.6 起支持 **原地升级**：在 Sileo 中直接更新即可，token、配置、审计与已下发的版本目录都保持不变，
-OpenMinis 侧无需重填 token。可原地升级的旧版本为白名单内的 0.3.3-1 与 0.3.5-1；
+OpenMinis 侧无需重填 token。可原地升级的旧版本为白名单内的 0.3.3-1 与 0.3.5-1；而已部署的
+0.3.6 与本版 payload 逐字节相同，因此会命中“本版打包集合”而同样允许原地升级。
 更早的版本（例如 0.3.2 系列）仍请先卸载再安装（卸载后可直接重装，不必 purge）。
-安装包版本 `0.3.6-1+experimental`，移动端 bridge `0.3.6`，MCP API 版本仍为 `3`。
+安装包版本 `0.3.7-1+experimental`，移动端 bridge 仍为 `0.3.6`，MCP API 版本仍为 `3`。
 
 ## 工具
 
@@ -103,6 +154,9 @@ OpenMinis 侧无需重填 token。可原地升级的旧版本为白名单内的 
 
 ## 未验证项
 
-本版本的真机**原地升级**验收尚未完成（升级路径已由离线模拟的完整 dpkg 序列覆盖，
-见 `test_upgrade.py`：26 项）；安装、卸载、重启恢复与自身更新链路的真机验收沿用上一版结论。
-本机测试运行于 Python 3.12，Python 3.9 仅做语法解析。详见 `TEST_REPORT_0361.txt`。
+本版本的真机验收尚未完成：升级中断（`postrm abort-upgrade`）与回退助手
+`openminis-jb-restore-runtime` 已由离线模拟的完整 dpkg 序列覆盖（见 `test_upgrade.py`：56 项，
+其中中断恢复 12 项、保留区 6 项、恢复助手 11 项），真机演练请使用本版附带的
+`OpenMinis-Jailbreak_0.3.7-ABORT-TEST.deb`（故意损坏的载荷，仅供测试）并对照 `ABORT_TEST_0371.md`
+观察“一行结论 + 服务恢复 + token/config/audit 不变”。安装、卸载、重启恢复与自身更新链路的真机
+验收沿用 0.3.6 结论。本机测试运行于 Python 3.12，Python 3.9 仅做语法解析。详见 `TEST_REPORT_0371.txt`。

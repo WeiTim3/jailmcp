@@ -15,8 +15,15 @@ import time
 LABEL = 'app.openminis.jbbridge'
 STORE = Path('/usr/local/lib/openminis-jb')
 TRANSACTION = Path('/usr/local/lib/openminis-jb-transaction')
+# Retained previous known-good root runtime (0.3.7). Deliberately a different
+# path from TRANSACTION: this area is only ever written after a *successful*
+# activation and is never read, written or removed by the in-flight transaction
+# logic (and the recovery helper never touches TRANSACTION).
+PREVIOUS = Path('/usr/local/lib/openminis-jb-previous')
+PREV_SCHEMA = 'openminis-jb-previous-1'
+PREV_EXEC = '/usr/local/bin/openminis-jb-restore-runtime'
 RECEIPT = STORE / '.clean-install-v032'
-VERSION = '0.3.6-1+experimental'
+VERSION = '0.3.7-1+experimental'
 RECEIPT_DATA = ('OpenMinis-Jailbreak clean-install ' + VERSION + '\n').encode()
 RECEIPT_PREFIX = b'OpenMinis-Jailbreak clean-install '
 SCHEMA = 'openminis-jb-upgrade-1'
@@ -292,6 +299,16 @@ def remove_residue():
     # Never infer ownership from a name alone or import the failed migration code.
     for p in (STORE / 'migration-backup-v030', TRANSACTION):
         if os.path.lexists(p): print('WARNING: unverified migration diagnostics preserved')
+    # 0.3.7: the retained rollback runtime belongs to this package, but it is only
+    # removed when its manifest verifies; anything else is preserved for review.
+    try:
+        if previous_meta() is not None:
+            remove_private_tree(PREVIOUS)
+            print('NOTICE: retained previous runtime removed with the package')
+        elif os.path.lexists(PREVIOUS):
+            print('WARNING: unverified rollback area preserved')
+    except Exception:
+        print('WARNING: rollback area cleanup skipped safely')
     try:
         guard(STORE)
         if cleaned and receipt(): RECEIPT.unlink()
@@ -656,31 +673,82 @@ def snapshot(boot, current, label, live, from_version):
     write_private(TRANSACTION / 'meta.json', json.dumps(meta, sort_keys=True, indent=1).encode())
     sync_dir(folder); sync_dir(TRANSACTION); sync_dir(TRANSACTION.parent)
 
-def replace_root(path, data):
+def read_private(path):
+    """Bytes of a root-owned, single-link regular file; never through a link."""
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise RuntimeError('Unsafe snapshot member')
+    if info.st_uid != 0 or info.st_nlink != 1:
+        raise RuntimeError('Unsafe snapshot member')
+    return path.read_bytes()
+
+def ensure_store():
+    """Re-create the runtime directory when a failed unpack removed it.
+
+    A restore never needs anything from the unpacked payload: only the snapshot
+    and its manifest are read, so a missing (or truncated) STORE is re-created
+    here before the hash-verified bytes are written back.
+    """
+    if STORE.is_dir(): return
+    guard(STORE)
+    os.mkdir(str(STORE), 0o755)
+    os.chmod(str(STORE), 0o755)
+
+def replace_root(path, data, mode=0o644):
     """Atomically put a root-owned payload file back (never follows a link)."""
     guard(path)
     fd, name = tempfile.mkstemp(prefix='.openminis-restore-', dir=str(path.parent))
     try:
-        os.fchmod(fd, 0o644); os.fchown(fd, 0, 0)
+        os.fchmod(fd, mode); os.fchown(fd, 0, 0)
         with os.fdopen(fd, 'wb') as stream:
             stream.write(data); stream.flush(); os.fsync(stream.fileno())
         os.replace(name, str(path))
     finally:
         if os.path.exists(name): os.unlink(name)
 
-def restore_snapshot(meta):
-    """Put back exactly the root runtime and plist recorded before the unpack."""
+def load_snapshot(meta, source=None):
+    """Read and hash-verify a snapshot *before* anything on disk is replaced.
+
+    `source` is the upgrade transaction directory or the retained
+    previous-runtime area. Returns (runtime, plist, receipt) bytes. Because every
+    member is verified against the manifest first, a partial/corrupt snapshot can
+    never cause a half-restore.
+    """
+    folder = (source if source is not None else TRANSACTION) / 'runtime'
+    runtime = {}
     for name in RUNTIME:
-        data = (TRANSACTION / 'runtime' / name).read_bytes()
+        data = read_private(folder / name)
         if hashlib.sha256(data).hexdigest() != meta['runtime'][name]:
-            raise RuntimeError('Upgrade snapshot is inconsistent')
-        replace_root(STORE / name, data)
-    if meta['plist'] is not None:
-        data = (TRANSACTION / 'plist').read_bytes()
-        if hashlib.sha256(data).hexdigest() != meta['plist']:
-            raise RuntimeError('Upgrade snapshot is inconsistent')
-        atomic(data)
-    return (runtime_hashes() == meta['runtime'] and file_sha(DEST) == meta['plist'])
+            raise RuntimeError('Snapshot member does not match its manifest')
+        runtime[name] = data
+    plist = None
+    if meta.get('plist') is not None:
+        plist = read_private(folder.parent / 'plist')
+        if hashlib.sha256(plist).hexdigest() != meta['plist']:
+            raise RuntimeError('Snapshot plist does not match its manifest')
+    receipt = None
+    if meta.get('receipt') is not None:
+        receipt = read_private(folder.parent / 'receipt')
+        if hashlib.sha256(receipt).hexdigest() != meta['receipt']:
+            raise RuntimeError('Snapshot receipt does not match its manifest')
+    return runtime, plist, receipt
+
+def apply_snapshot(runtime, plist, receipt=None):
+    """Write verified snapshot bytes back and report what could be verified."""
+    ensure_store()
+    for name in RUNTIME: replace_root(STORE / name, runtime[name])
+    if plist is not None: atomic(plist)
+    if receipt is not None: replace_root(RECEIPT, receipt, 0o600)
+    want = dict((name, hashlib.sha256(runtime[name]).hexdigest()) for name in RUNTIME)
+    return {'runtime': runtime_hashes() == want,
+            'plist': plist is None or file_sha(DEST) == hashlib.sha256(plist).hexdigest(),
+            'receipt': receipt is None or file_sha(RECEIPT) == hashlib.sha256(receipt).hexdigest()}
+
+def restore_snapshot(meta, source=None):
+    """Put back exactly the root runtime and plist recorded before the unpack."""
+    runtime, plist, _receipt = load_snapshot(meta, source)
+    facts = apply_snapshot(runtime, plist)
+    return facts['runtime'] and facts['plist']
 
 def commit(meta):
     marked = dict(meta, committed=True, committed_at=int(time.time()), stage=STAGE)
@@ -694,12 +762,382 @@ def commit(meta):
     finally:
         if os.path.exists(name): os.unlink(name)
     sync_dir(TRANSACTION)
+    # 0.3.7: a successful upgrade no longer deletes the snapshot without a copy.
+    # The pre-upgrade runtime/plist/pointer is retained (hash-verified first) in
+    # a private rollback area so a bad build can be returned to the previous
+    # runtime without asking dpkg to downgrade. Retention is best effort only: a
+    # service that already passed its health check is never failed by it.
+    retained = False
     try:
-        discard_transaction()
+        retain_previous(marked); retained = True
     except Exception:
-        # The transaction is already marked committed, so a later preinst treats
-        # it as obsolete and replaces it; never fail a successful upgrade here.
-        print('NOTICE: committed upgrade snapshot preserved for the next run')
+        print('NOTICE: no rollback copy of the previous runtime could be retained; the committed '
+              'snapshot is kept for review')
+    if retained:
+        try:
+            discard_transaction()
+        except Exception:
+            # The transaction is already marked committed, so a later preinst treats
+            # it as obsolete and replaces it; never fail a successful upgrade here.
+            print('NOTICE: committed upgrade snapshot preserved for the next run')
+
+# ------------------------------------------------- retained previous runtime
+#
+# 0.3.7 keeps the pre-upgrade root runtime, the previous service plist and the
+# previous mobile active pointer in a root-owned private area (0700) with an
+# explicit manifest, so a later bad build can be rolled back without a dpkg
+# downgrade. This area is strictly separate from the in-flight transaction:
+# nothing here reads, writes or removes TRANSACTION, and the transaction code
+# only ever hands this area a *committed* (health-checked) snapshot.
+# Nothing in this area is reachable from the mobile side; token, config and
+# audit are never copied into it.
+
+def previous_directory():
+    """The private rollback area, or None; refuses any lookalike."""
+    try:
+        info = PREVIOUS.lstat()
+    except FileNotFoundError:
+        return None
+    if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o700):
+        raise RuntimeError('Unsafe rollback area')
+    return PREVIOUS
+
+def previous_meta():
+    """Structurally valid rollback manifest, else None (never trusts content)."""
+    def digest(value):
+        return value is None or (isinstance(value, str) and SHA.fullmatch(value) is not None)
+    previous_directory()
+    try:
+        meta = json.loads(read_private(PREVIOUS / 'meta.json'))
+    except FileNotFoundError:
+        return None
+    if not isinstance(meta, dict) or meta.get('schema') != PREV_SCHEMA: return None
+    runtime = meta.get('runtime')
+    if not isinstance(runtime, dict) or sorted(runtime) != sorted(RUNTIME): return None
+    for name in runtime:
+        if not isinstance(runtime[name], str) or SHA.fullmatch(runtime[name]) is None: return None
+    if not digest(meta.get('plist')): return None
+    for key in ('from_version', 'from_label', 'to_version'):
+        if not isinstance(meta.get(key), str) or not meta[key]: return None
+    boot = meta.get('boot')
+    if not isinstance(boot, str) or SHA.fullmatch(boot) is None: return None
+    pointer = meta.get('pointer')
+    if (not isinstance(pointer, dict) or not pointer or set(pointer) - set(POINTER_KEYS)
+            or not isinstance(pointer.get('current'), str) or SHA.fullmatch(pointer['current']) is None):
+        return None
+    for name in pointer:
+        if not digest(pointer[name]): return None
+    return meta
+
+def previous_manifest(meta):
+    """Manifest written next to the retained runtime (versions, hashes, boot)."""
+    return {'schema': PREV_SCHEMA, 'created': int(time.time()), 'boot': meta['boot'],
+            'from_version': meta.get('from_version') or 'unknown',
+            'from_label': meta.get('label') or 'unknown', 'to_version': VERSION,
+            'runtime': dict(meta['runtime']), 'plist': meta.get('plist'),
+            'pointer': dict(meta['mobile']['pointer']),
+            'note': 'pre-upgrade runtime retained by ' + VERSION + '; token/config/audit not included'}
+
+def remove_private_tree(path):
+    """Delete a root-owned private tree; never follows a link, never partial."""
+    def walk(folder, depth):
+        if depth > 4: raise RuntimeError('Unexpected rollback content')
+        with os.scandir(str(folder)) as entries:
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                if info.st_uid != 0: raise RuntimeError('Unexpected rollback content')
+                if entry.is_symlink(): os.unlink(entry.path)
+                elif entry.is_dir(follow_symlinks=False):
+                    walk(Path(entry.path), depth + 1); os.rmdir(entry.path)
+                elif entry.is_file(follow_symlinks=False):
+                    if info.st_nlink != 1: raise RuntimeError('Unexpected rollback content')
+                    os.unlink(entry.path)
+                else: raise RuntimeError('Unexpected rollback content')
+    walk(path, 0)
+    os.rmdir(str(path))
+
+def retain_previous(meta):
+    """Copy a committed pre-upgrade state into the rollback area (verified first).
+
+    Every byte is hash-verified against the transaction manifest and the whole
+    tree is staged elsewhere before it is renamed into place, so a simultaneous
+    or corrupt transaction can never poison the retained copy and a crash can
+    never leave a half-written rollback area.
+    """
+    runtime, plist, _receipt = load_snapshot(meta)
+    parent = PREVIOUS.parent
+    previous_directory()
+    if not parent.is_dir(): raise RuntimeError('Missing runtime library directory')
+    guard(PREVIOUS)
+    with os.scandir(str(parent)) as entries:
+        stale = [Path(entry.path) for entry in entries
+                 if entry.name.startswith('.openminis-previous-')]
+    for path in stale:
+        try:
+            if path.lstat().st_uid == 0: remove_private_tree(path)
+        except Exception:
+            pass
+    staging = parent / ('.openminis-previous-' + os.urandom(8).hex())
+    os.mkdir(str(staging), 0o700); os.chmod(str(staging), 0o700)
+    try:
+        folder = staging / 'runtime'
+        os.mkdir(str(folder), 0o700); os.chmod(str(folder), 0o700)
+        for name in RUNTIME: write_private(folder / name, runtime[name])
+        if plist is not None: write_private(staging / 'plist', plist)
+        write_private(staging / 'meta.json',
+                      json.dumps(previous_manifest(meta), sort_keys=True, indent=1).encode())
+        sync_dir(folder); sync_dir(staging); sync_dir(parent)
+        old = None
+        if os.path.lexists(PREVIOUS):
+            old = parent / ('.openminis-previous-old-' + os.urandom(8).hex())
+            os.rename(str(PREVIOUS), str(old))
+        try:
+            os.rename(str(staging), str(PREVIOUS))
+        except BaseException:
+            if old is not None and not os.path.lexists(PREVIOUS):
+                os.rename(str(old), str(PREVIOUS))
+            raise
+        sync_dir(parent)
+        if old is not None:
+            try: remove_private_tree(old)
+            except Exception: pass
+    finally:
+        if os.path.lexists(staging):
+            try: remove_private_tree(staging)
+            except Exception: pass
+    return PREVIOUS
+
+# ------------------------------------------------ aborted upgrade (postrm)
+#
+# dpkg calls the NEW package's `postrm abort-upgrade <old-version>` when the new
+# payload fails to unpack. At that point the runtime files may be missing or
+# truncated and our preinst has already stopped the service. This path restores
+# the uncommitted same-boot snapshot (root runtime + plist byte-for-byte, then
+# the mobile active pointer) and restarts the service. It must never wedge dpkg,
+# so it always prints exactly one line and never raises; token, config and audit
+# are never touched. The restore reads only the snapshot and its manifest, which
+# is what makes it work when the unpack already deleted the files themselves.
+
+ABORT_OK = ('OpenMinis-Jailbreak: dpkg aborted the upgrade after preinst; the pre-upgrade root '
+    'runtime, service plist and mobile active pointer were restored from the same-boot snapshot, '
+    'the previous version is running and healthy, and token, config and audit were not touched '
+    '(the snapshot was kept at ' + str(TRANSACTION) + ' for review)')
+
+def abort_notice(text):
+    print('NOTICE: OpenMinis-Jailbreak abort recovery: ' + text +
+          '; nothing else was changed and dpkg may finish')
+
+def postrm_abort(action):
+    """Never raises, never wedges dpkg, prints exactly one line."""
+    try:
+        stage('postrm-' + action)
+        if not os.path.lexists(TRANSACTION):
+            abort_notice('no uncommitted upgrade snapshot exists for ' + VERSION)
+            return
+        try:
+            meta = transaction_meta()
+        except Exception:
+            meta = None
+        if meta is None:
+            abort_notice('the leftover snapshot is not a recognised ' + VERSION +
+                         ' transaction; it was left untouched')
+            return
+        if meta['committed']:
+            abort_notice('the snapshot was already committed by a successful configure, so there '
+                         'is nothing to roll back')
+            return
+        try:
+            boot = boot_stamp()
+        except Exception:
+            boot = None
+        if boot is None:
+            abort_notice('boot identity could not be established, so a cross-boot snapshot cannot '
+                         'be excluded; the snapshot was left untouched')
+            return
+        if meta['boot'] != boot:
+            abort_notice('the uncommitted snapshot belongs to an earlier boot; it was left untouched')
+            return
+        try:
+            runtime, plist, receipt = load_snapshot(meta)
+        except Exception:
+            abort_notice('the uncommitted snapshot is incomplete or does not match its manifest, so '
+                         'nothing was replaced (retry the install, or use ' + PREV_EXEC + ')')
+            return
+        run_receipt = receipt if meta.get('receipt') is not None else None
+        try:
+            facts = apply_snapshot(runtime, plist, run_receipt)
+        except Exception:
+            facts = {'runtime': False, 'plist': False}
+        if not (facts.get('runtime') and facts.get('plist')):
+            abort_notice('the snapshot verified but the root runtime and/or service plist could not '
+                         'be written back (finish with ' + PREV_EXEC + ' once dpkg can complete)')
+            return
+        pointer = False
+        try:
+            restore_pointer(meta['mobile']['pointer']); pointer = True
+        except Exception:
+            pointer = False
+        service = False
+        try:
+            if active(): stop()
+        except Exception:
+            pass
+        try:
+            start_service(); healthy(); service = True
+        except Exception:
+            service = False
+        if pointer and service:
+            print(ABORT_OK)
+            return
+        abort_notice('the root runtime and plist were restored byte-for-byte but ' + ' and '.join(
+            name for name, value in (('the mobile active pointer', pointer),
+                                     ('the service health check', service)) if not value) +
+            ' could not be verified')
+    except BaseException:
+        abort_notice('the abort path stopped on an internal error; the snapshot and every user file '
+                     'were left untouched')
+
+# ------------------------------------------------ recovery helper (0.3.7)
+#
+# /usr/local/bin/openminis-jb-restore-runtime is generated from this module (see
+# build.py) and runs as root. It reads only the retained rollback area, uses the
+# embedded UID501 helpers through mobile() for the mobile pointer, never reads or
+# prints the token as root, and never writes token/config/audit. The helper does
+# not lower dpkg's recorded version: that is documented in both READMEs.
+
+RESTORE_USAGE = (
+'usage: ' + PREV_EXEC + ' [--dry-run] [--pointer-only]\n'
+'  --dry-run       verify the retained snapshot and print the plan; change nothing\n'
+'  --pointer-only  restore only the mobile active pointer (no root runtime, no plist)\n'
+'Restores the previous known-good runtime retained by a successful upgrade of\n'
+'OpenMinis-Jailbreak ' + VERSION + ' (' + str(PREVIOUS) + '): the four root runtime\n'
+'files, the service plist and the mobile active pointer. dpkg keeps recording\n'
++ VERSION + ', so this returns the device to the previous runtime without\n'
+'reinstalling an older .deb. token, config and audit are never read, written or printed.\n')
+
+class HelperRefused(RuntimeError):
+    pass
+
+def installed_version():
+    """Version dpkg records for this package, or None when it cannot be read."""
+    try:
+        result = run(['/usr/bin/dpkg-query', '-W', '-f=${Version}', 'app.openminis.jailbreak'])
+    except Exception:
+        return None
+    if result.returncode: return None
+    return result.stdout.decode(errors='replace').strip() or None
+
+def helper_preflight():
+    """Root-side preconditions for the helper; independent of the payload."""
+    if sys.platform != 'darwin' or os.geteuid() != 0:
+        raise RuntimeError('Requires Roothide iOS root')
+    account = pwd.getpwnam('mobile')
+    if account.pw_uid != 501 or 0 in os.getgrouplist('mobile', account.pw_gid):
+        raise RuntimeError('Unsafe mobile identity/groups')
+    r = root()
+    guard(STORE); guard(DEST)
+    return r
+
+def helper_restore(manifest, dry, pointer_only):
+    """Verify, restore, restart, report. Returns the process exit status."""
+    prefix = 'openminis-jb-restore-runtime: '
+    print(prefix + 'manifest ok: ' + manifest['from_label'] + ' (' + manifest['from_version'] +
+          ') -> ' + manifest['to_version'] + ', captured after boot ' + manifest['boot'][:12])
+    runtime = plist = None
+    if pointer_only:
+        print(prefix + 'pointer-only: the root runtime and the service plist are left untouched')
+    else:
+        runtime, plist, _receipt = load_snapshot(manifest, PREVIOUS)
+        r = helper_preflight()
+        if plist is not None and not equivalent(plist, r):
+            raise HelperRefused('the retained service plist is not the expected shape for this build')
+        if dry:
+            print(prefix + 'dry-run: would restore the root runtime (' + ', '.join(RUNTIME) +
+                  ') from ' + str(PREVIOUS / 'runtime') + ', each file sha256-verified first')
+            if plist is None:
+                print(prefix + 'dry-run: no service plist was retained; ' + str(DEST) +
+                      ' would be left untouched')
+            else:
+                print(prefix + 'dry-run: would restore ' + str(DEST) + ' byte-for-byte')
+        else:
+            facts = apply_snapshot(runtime, plist)
+            if not (facts['runtime'] and facts['plist']):
+                raise HelperRefused('the retained snapshot could not be written back and verified')
+            print(prefix + 'restored the root runtime: ' + ', '.join(RUNTIME) +
+                  ' (sha256-verified against the manifest)')
+            if plist is not None:
+                print(prefix + 'restored the service plist ' + str(DEST) + ' (sha256-verified)')
+    pointer = manifest['pointer']
+    if dry:
+        print(prefix + 'dry-run: would repoint the mobile active version to ' + pointer['current'] +
+              ' (previous=' + str(pointer.get('previous')) + ')')
+        print(prefix + 'dry-run: would restart the service and run the authenticated health check')
+        return 0
+    try:
+        if active(): stop()
+    except Exception:
+        pass
+    try:
+        restore_pointer(pointer)
+    except Exception:
+        try:
+            if not active(): start_service()
+        except Exception:
+            pass
+        raise HelperRefused('the mobile active pointer could not be restored; the files already '
+                            'written stay in place and the service is left running')
+    print(prefix + 'restored the mobile active pointer (current=' + pointer['current'] +
+          ', previous=' + str(pointer.get('previous')) + ')')
+    try:
+        start_service(); healthy()
+    except Exception:
+        print(prefix + 'the retained runtime is in place but the service could not be restarted and '
+              'health-checked; start it manually before using the API')
+        return 1
+    print(prefix + 'service restarted: the authenticated health check passed for the restored version')
+    print(prefix + 'done; dpkg still records ' + str(installed_version() or VERSION) +
+          ' (reinstall this .deb to return to the packaged runtime)')
+    return 0
+
+def restore_main(argv):
+    """CLI entry point of the root recovery helper. Returns an exit status."""
+    flags = set()
+    for item in argv:
+        if item in ('-h', '--help'):
+            sys.stdout.write(RESTORE_USAGE); return 0
+        if item in ('-n', '--dry-run'): flags.add('dry')
+        elif item == '--pointer-only': flags.add('pointer')
+        else:
+            print('REFUSED: unrecognised argument (not echoed); see --help; nothing changed')
+            return 2
+    try:
+        manifest = previous_meta()
+    except Exception:
+        print('REFUSED: ' + str(PREVIOUS) + ' is not a root-owned 0700 directory; nothing changed')
+        return 1
+    if manifest is None:
+        print('REFUSED: no valid retained rollback manifest at ' + str(PREVIOUS / 'meta.json') +
+              ' (missing, corrupt or unknown schema); nothing changed')
+        return 1
+    print('openminis-jb-restore-runtime: ' + PREV_EXEC + ' ' +
+          ('--dry-run' if 'dry' in flags else '') + (' --pointer-only' if 'pointer' in flags else ''))
+    if os.path.lexists(TRANSACTION):
+        print('openminis-jb-restore-runtime: note: an upgrade transaction exists at ' +
+              str(TRANSACTION) + '; it is left untouched (finish or retry the package operation)')
+    recorded = installed_version()
+    if recorded is not None and manifest['to_version'] != recorded:
+        print('openminis-jb-restore-runtime: note: dpkg records ' + recorded +
+              ', the manifest targets ' + manifest['to_version'] + '; continuing anyway')
+    try:
+        return helper_restore(manifest, dry='dry' in flags, pointer_only='pointer' in flags)
+    except HelperRefused as error:
+        print('REFUSED: ' + str(error) + '; nothing further was changed')
+        return 1
+    except Exception:
+        print('REFUSED: the retained snapshot could not be verified or restored; nothing further '
+              'was changed')
+        return 1
 
 def confirm_listener_released():
     stage('upgrade-listener-released')
@@ -936,9 +1374,14 @@ def main(phase, args):
             raise RuntimeError('Active job lacks this release ownership receipt; removal blocked')
         remove_stop(); return
     if phase == 'postrm':
+        if action in ('abort-upgrade', 'abort-install'):
+            # dpkg aborted between preinst and postinst: put the same-boot snapshot
+            # back (or say precisely why not). This path must never fail.
+            postrm_abort(action); return
         if action not in ('remove', 'purge'): return
         remove_residue(); return
 
+# === package_lifecycle control-script entry point ===
 if __name__ == '__main__':
     try: main(sys.argv[1], sys.argv[2:])
     except BaseException:
