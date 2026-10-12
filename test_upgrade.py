@@ -732,7 +732,8 @@ class UpgradeHelperTests(UpgradeCase):
 
         listed = {'0.3.6-1': '1d64cb7fe9de833751e0dc3d7a3fcb123b108afd99df07c27ffbed3b0539c385',
                   '0.3.9-1': 'e74d21d5cc1189911617d9e2b5f6e28dead7466f7cf68082206f9c9cc3aaaf43',
-                  '0.3.10-1': '5401eca53b7446cedc5a8d82c7d3799fad1fc9e1aa219bfaea4bacdfd93d221d'}
+                  '0.3.10-1': '5401eca53b7446cedc5a8d82c7d3799fad1fc9e1aa219bfaea4bacdfd93d221d',
+                  '0.3.11-1': 'e4325d728807ead392e82c1bf1b63169e82069b7db30f3fae052c194d13cba94'}
         with patch.object(lc, 'HASHES', dict(PACKAGED)):
             for label, bridge in listed.items():
                 self.assertEqual(lc.KNOWN_SETS[label], hashes(bridge))

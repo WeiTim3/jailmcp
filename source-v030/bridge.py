@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 import maintenance_runtime as rt
 
-VERSION = '0.3.9'
+VERSION = '0.3.10'
 # One full 262144-byte chunk is ~349528 base64 characters; the transport limit
 # must cover that plus the JSON envelope so jb_write_chunk can accept MAX_CHUNK.
 MAX_BODY = 400000
@@ -98,18 +98,18 @@ tool('jb_search', 'Bounded walk from root (private state skipped, symlinked dire
 tool('jb_read_chunk', 'Base64 chunk of a regular file (<=262144 bytes) with the sha256 and size of the WHOLE file and an eof flag.',
      dict(FILE, offset={'type': 'integer', 'minimum': 0},
           length={'type': 'integer', 'minimum': 1, 'maximum': 262144}), FILE)
-tool('jb_write_chunk', 'Write base64 at an offset, creating the file if absent. Multi-chunk writes are NOT atomic; expected_sha256 compare-and-swaps the current content before writing and only protects when supplied; truncate requires offset 0; final fsyncs.',
+tool('jb_write_chunk', 'Write base64 at an offset, creating the file if absent. Multi-chunk writes are NOT atomic; expected_sha256 compare-and-swaps the current content before writing and only protects when supplied; truncate requires offset 0; final fsyncs. The whole-file sha256 is computed only on the final chunk or with want_sha256, so a multi-chunk write costs linear time rather than re-reading the file every chunk.',
      dict(FILE, offset={'type': 'integer', 'minimum': 0}, data_base64=STRING,
-          expected_sha256=SHA, truncate=BOOL, final=BOOL),
+          expected_sha256=SHA, truncate=BOOL, final=BOOL, want_sha256=BOOL),
      ('project', 'path', 'offset', 'data_base64'))
 tool('jb_projects', 'Configured project roots with current existence/directory status. Read-only: no tool can add or widen roots.')
 tool('jb_mkdir', 'Create ONE directory inside a project root through the same dirfd + O_NOFOLLOW traversal as the other file tools: no absolute path, no empty/. /.. component, no symlinked component, never the private state directory. parents=false requires the parent to exist; parents=true creates missing components one at a time, each reopened with O_NOFOLLOW. mode is an octal string 0700..0777 (privileged bits refused) applied under a restrictive umask so the result can never exceed it. An existing leaf is refused and reported as a directory, file, symlink or other.',
      dict(FILE, parents=BOOL, mode=STRING), ('project', 'path'))
 tool('jb_upload_begin', 'Open a staged multi-chunk upload under the private state directory (never reachable through the file tools, so it does not pollute the project) and return an opaque upload_id. At most 4 concurrent uploads and 256 MiB staged in total in this build; stale staging is only ever removed by a bounded sweep of the upload area. Nothing becomes visible in a project until jb_upload_commit, which is the ATOMIC alternative to multi-call jb_write_chunk (that path is not atomic).',
      {'project': STRING, 'name': STRING})
-tool('jb_upload_chunk', 'Write base64 at an offset inside a staged upload with the same offset and compare-and-swap semantics as jb_write_chunk: an offset past the staged end is refused, expected_sha256 compare-and-swaps the whole staged content when supplied, and the reply carries the bytes written plus the whole-staged sha256 and size. Nothing is visible in the project.',
+tool('jb_upload_chunk', 'Write base64 at an offset inside a staged upload with the same offset and compare-and-swap semantics as jb_write_chunk: an offset past the staged end is refused, expected_sha256 compare-and-swaps the whole staged content when supplied, and the reply carries the bytes written and the staged size - the whole-staged sha256 is computed only with want_sha256, never per chunk. jb_upload_commit verifies the assembled digest. Nothing is visible in the project.',
      {'upload_id': STRING, 'offset': {'type': 'integer', 'minimum': 0}, 'data_base64': STRING,
-      'expected_sha256': SHA}, ('upload_id', 'offset', 'data_base64'))
+      'expected_sha256': SHA, 'want_sha256': BOOL}, ('upload_id', 'offset', 'data_base64'))
 tool('jb_upload_commit', 'Verify the assembled upload (against expected_sha256 when supplied) and install it at project/path with ONE os.replace anchored on the destination dirfd, so the name holds either the old file or the complete new data and never a partial write. Refuses an existing destination unless overwrite=true, never replaces a directory, a symlink or a foreign/hardlinked file, refuses the private state directory, and removes the staging so the id cannot be reused. A refused commit changes nothing.',
      {'upload_id': STRING, 'project': STRING, 'path': STRING, 'expected_sha256': SHA,
       'overwrite': BOOL}, ('upload_id', 'project', 'path'))
@@ -691,12 +691,16 @@ def tool_write_chunk(args):
             while written < len(data):
                 written += os.write(handle, data[written:])
             if final is True: os.fsync(handle)
+            size = os.fstat(handle).st_size
         finally:
             os.close(handle)
-        sha, size = hash_leaf(parent, leaf)
+        # Hashing the WHOLE file after every chunk is quadratic - a 256 MiB file
+        # written in 256 KiB chunks would read ~137 GB. Only the last chunk, or a
+        # caller that asks, pays for it (size is a cheap fstat).
+        sha = hash_leaf(parent, leaf)[0] if (final is True or args.get('want_sha256') is True) else None
     return {'written': len(data), 'offset': offset, 'sha256': sha, 'size': size,
             'synced': final is True, 'truncated': truncate is True,
-            'atomic': False, 'cas_checked': bool(expected)}
+            'atomic': False, 'cas_checked': bool(expected), 'hashed': sha is not None}
 
 def projects_info():
     configured = rt.config()['projects']
@@ -993,15 +997,19 @@ def tool_upload_chunk(args):
                     while written < len(data):
                         written += os.write(handle, data[written:])
                     os.fsync(handle)
+                    size = os.fstat(handle).st_size
                 finally:
                     os.close(handle)
-                sha, size = hash_leaf(up, 'data')
+                # See jb_write_chunk: never re-hash the whole staging file per
+                # chunk. jb_upload_commit verifies the assembled digest once.
+                sha = hash_leaf(up, 'data')[0] if args.get('want_sha256') is True else None
             finally:
                 os.close(up)
         finally:
             os.close(uploads)
     return {'upload_id': upload_id, 'written': len(data), 'offset': offset,
             'sha256': sha, 'size': size, 'synced': True, 'cas_checked': bool(expected),
+            'hashed': sha is not None,
             'visible_in_project': False, 'atomic': False,
             'note': 'Staged only; jb_upload_commit installs the whole file atomically.'}
 

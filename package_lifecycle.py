@@ -23,7 +23,7 @@ PREVIOUS = Path('/usr/local/lib/openminis-jb-previous')
 PREV_SCHEMA = 'openminis-jb-previous-1'
 PREV_EXEC = '/usr/local/bin/openminis-jb-restore-runtime'
 RECEIPT = STORE / '.clean-install-v032'
-VERSION = '0.3.11-1+experimental'
+VERSION = '0.3.12-1+experimental'
 RECEIPT_DATA = ('OpenMinis-Jailbreak clean-install ' + VERSION + '\n').encode()
 RECEIPT_PREFIX = b'OpenMinis-Jailbreak clean-install '
 SCHEMA = 'openminis-jb-upgrade-1'
@@ -74,6 +74,11 @@ KNOWN_SETS = {
     '0.3.10-1': {'launcher.py': 'b905c063a8e7235b2e40cd1e3137e77372537d4611ff0af1e410049e9f96b497',
                  'maintenance_runtime.py': 'e38fe25d1d61ba759824a3d17af2101af0fbc1a6533c3444e8636211d95af46a',
                  'bridge.py': '5401eca53b7446cedc5a8d82c7d3799fad1fc9e1aa219bfaea4bacdfd93d221d',
+                 'mobile_setup.py': '78ed4a0f75a16ba15298649713db62d3434c86e894ba0a3cace5385907389550'},
+    # 0.3.12 changes bridge.py again (chunked writes stop re-hashing per chunk).
+    '0.3.11-1': {'launcher.py': 'b905c063a8e7235b2e40cd1e3137e77372537d4611ff0af1e410049e9f96b497',
+                 'maintenance_runtime.py': 'e38fe25d1d61ba759824a3d17af2101af0fbc1a6533c3444e8636211d95af46a',
+                 'bridge.py': 'e4325d728807ead392e82c1bf1b63169e82069b7db30f3fae052c194d13cba94',
                  'mobile_setup.py': '78ed4a0f75a16ba15298649713db62d3434c86e894ba0a3cace5385907389550'},
 }
 REMOVAL = ''  # Filled by reproducible builder.

@@ -463,7 +463,14 @@ class Chunks(Fixture):
             offset += len(piece)
             self.assertEqual(result['written'], len(piece))
             self.assertEqual(result['size'], offset)
-            self.assertEqual(result['sha256'], hashlib.sha256(payload[:offset]).hexdigest())
+            # Only the final chunk produces the whole-file digest; earlier chunks
+            # must not re-read the file (that was the quadratic cost).
+            if index == len(pieces) - 1:
+                self.assertEqual(result['sha256'], hashlib.sha256(payload[:offset]).hexdigest())
+                self.assertTrue(result['hashed'])
+            else:
+                self.assertIsNone(result['sha256'])
+                self.assertFalse(result['hashed'])
             self.assertEqual(result['synced'], index == len(pieces) - 1)
             self.assertFalse(result['atomic'])
         self.assertEqual((self.project / 'blob.bin').read_bytes(), payload)
@@ -506,13 +513,14 @@ class Chunks(Fixture):
                          expected_sha256=hashlib.sha256(b'original').hexdigest())
         self.assertTrue(tail['cas_checked'])
         self.assertEqual((self.project / 'cas.bin').read_bytes(), b'CHiginal')
-        self.assertEqual(tail['sha256'], hashlib.sha256(b'CHiginal').hexdigest())
+        # Not a final chunk, so the whole-file digest is not computed.
+        self.assertIsNone(tail['sha256'])
         self.assertEqual(tail['size'], 8)
         # truncate=True at offset 0 is the way to start a fresh file.
         result = self.call('jb_write_chunk', project='main', path='cas.bin', offset=0,
                            data_base64=base64.b64encode(b'changed').decode(),
                            expected_sha256=hashlib.sha256(b'CHiginal').hexdigest(),
-                           truncate=True)
+                           truncate=True, want_sha256=True)
         self.assertEqual(result['sha256'], hashlib.sha256(b'changed').hexdigest())
         self.assertEqual((self.project / 'cas.bin').read_bytes(), b'changed')
 
@@ -713,7 +721,9 @@ class Uploads(Fixture):
         offset = 0
         for result in results:
             offset += result['written']
-            self.assertEqual(result['sha256'], hashlib.sha256(data[:offset]).hexdigest())
+            # Staging never re-hashes per chunk; only want_sha256 asks for it.
+            self.assertIsNone(result['sha256'])
+            self.assertFalse(result['hashed'])
             self.assertEqual(result['size'], offset)
             self.assertTrue(result['synced'])
             self.assertFalse(result['atomic'])
@@ -880,18 +890,22 @@ class Uploads(Fixture):
                      data_base64=base64.b64encode(b'z').decode())
         first = self.call('jb_upload_chunk', upload_id=upload_id, offset=0,
                           data_base64=base64.b64encode(b'abcdef').decode())
-        self.assertEqual(first['sha256'], hashlib.sha256(b'abcdef').hexdigest())
+        self.assertIsNone(first['sha256'])          # not requested
         self.assertEqual(first['size'], 6)
         self.assertFalse(first['cas_checked'])
+        asked = self.call('jb_upload_chunk', upload_id=upload_id, offset=0,
+                          data_base64=base64.b64encode(b'abcdef').decode(), want_sha256=True)
+        self.assertEqual(asked['sha256'], hashlib.sha256(b'abcdef').hexdigest())
+        self.assertTrue(asked['hashed'])
         # Compare-and-swap checks the WHOLE staged content before writing.
         self.refused('jb_upload_chunk', upload_id=upload_id, offset=0,
                      data_base64=base64.b64encode(b'X').decode(), expected_sha256='0' * 64)
-        self.assertEqual(self.call('jb_upload_chunk', upload_id=upload_id, offset=0,
-                                   data_base64='')['sha256'],
-                         hashlib.sha256(b'abcdef').hexdigest())
+        self.assertIsNone(self.call('jb_upload_chunk', upload_id=upload_id, offset=0,
+                                    data_base64='')['sha256'])   # digest not requested
         swapped = self.call('jb_upload_chunk', upload_id=upload_id, offset=3,
                             data_base64=base64.b64encode(b'D').decode(),
-                            expected_sha256=hashlib.sha256(b'abcdef').hexdigest())
+                            expected_sha256=hashlib.sha256(b'abcdef').hexdigest(),
+                            want_sha256=True)
         self.assertTrue(swapped['cas_checked'])
         self.assertEqual(swapped['sha256'], hashlib.sha256(b'abcDef').hexdigest())
         self.refused('jb_upload_chunk', upload_id=upload_id, offset=7,
@@ -1206,7 +1220,7 @@ class Authorization(Fixture):
         self.assertEqual(sorted(b.SPEC), sorted(expected))
         for tool in b.TOOLS:
             self.assertFalse(tool['inputSchema']['additionalProperties'])
-        self.assertEqual(b.VERSION, '0.3.9')
+        self.assertEqual(b.VERSION, '0.3.10')
         # 0.3.5 appends five tools after the twenty 0.3.4 tools: the first twenty
         # keep their exact names, order and schemas.
         self.assertEqual(len(expected), 26)
@@ -1288,7 +1302,7 @@ class Authorization(Fixture):
         self.assertEqual(sorted(device),
                          ['bridge', 'ios', 'machine', 'pid', 'release', 'source_sha256',
                           'system', 'uid'])
-        self.assertEqual(device['bridge'], '0.3.9')
+        self.assertEqual(device['bridge'], '0.3.10')
 
     def test_no_root_helper_no_token_no_root_widening(self):
         self.put('x', b'x')

@@ -1,0 +1,28 @@
+OpenMinis-Jailbreak 0.3.12-1+experimental — 测试报告（分块写入/上传去掉 O(n^2) 重算哈希）
+================================================================================
+DEB: OpenMinis-Jailbreak_0.3.12-1+experimental_iphoneos-arm64e.deb
+SHA256: 943f9f15697cf6d60fdee54a97523391da13a3b41ec1ca405224b42c20ca402d
+可复现构建: 连续两次构建字节完全一致
+源码归档: OpenMinis-Jailbreak_0.3.12-1+experimental-source.tar.gz（见 SHA256SUMS）
+移动端 payload: 只有 bridge.py 变化（VERSION 0.3.9 -> 0.3.10，sha256 112cad8c67c5901be434046c1c5f48fadc89a2f93dfcee433e092419330c4191）；
+         launcher.py / maintenance_runtime.py / mobile_setup.py 与 0.3.6 逐字节相同。
+         升级白名单新增 KNOWN_SETS['0.3.11-1']。
+
+一、本版改动（0.3.12）
+--------------------
+jb_write_chunk / jb_upload_chunk 不再对每个分块重算整个文件的 sha256（那是 O(n^2)：256 MiB 分 1024 块
+约等于读取 137 GB）。整文件摘要现在只在 final=true 或显式 want_sha256=true 时计算，其余块只做一次 fstat
+取大小；返回体新增 hashed 字段，未计算时 sha256 为 null。CAS（expected_sha256）语义不变。
+
+二、测试
+--------
+233 项全部通过：test_package 23、test_filetools 74、test_safety 31、test_upgrade 56、
+test_api 39、test_supervisor 10。相关用例已改为断言：中间块 sha256 为 null、final/ want_sha256 才返回摘要。
+
+三、真机性能实测（分块上传，256 KiB/块）
+----------------------------------------
+  32 MiB  10.8s  (2.97 MiB/s)
+  64 MiB  20.9s  (3.15 MiB/s)
+  96 MiB  31.7s  (2.97 MiB/s)
+ 128 MiB  42.5s  (2.97 MiB/s)     -> 全程恒定 3.01 MiB/s
+修复前同一测试：吞吐随体积单调衰减（1.62 -> 0.23 MiB/s），256 MiB 需约 7 分钟；外推现在约 85 秒。
