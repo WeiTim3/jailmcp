@@ -1,7 +1,7 @@
 OpenMinis-Jailbreak 0.3.7-1+experimental — 测试报告（升级中断恢复 + 一键回退）
 ================================================================================
 DEB: OpenMinis-Jailbreak_0.3.7-1+experimental_iphoneos-arm64e.deb
-SHA256: e07aa2a2f6ef8d3ba6049b09f9d06372aa779446a9c12265b48f1d72d61252da
+SHA256: 737f5b2d635b806cf5e641e8eddc2834e7a3731a39a809843b08a66eafd62970
 可复现构建: 连续两次构建字节完全一致（SOURCE_DATE_EPOCH 固定、dpkg-deb --root-owner-group -Zgzip -z9）
 源码归档: OpenMinis-Jailbreak_0.3.7-1+experimental-source.tar.gz（openminis-jb/ 前缀，见 SHA256SUMS）
 真机演练包: OpenMinis-Jailbreak_0.3.7-ABORT-TEST.deb（**仅供测试，不进 SHA256SUMS、不发布**）
