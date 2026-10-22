@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'frida/**'
+      - 'frida-src/**'
       - '.github/workflows/frida.yml'
 
 permissions:
