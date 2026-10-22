@@ -25,7 +25,6 @@ MEMBERS = [
     'removal_helper.py',
     'mobile_setup.py',
     'source_archive.py',
-    'make_abort_test_deb.py',
     'run_baseline_api_tests.py',
     'test_package.py',
     'test_safety.py',
@@ -38,7 +37,7 @@ MEMBERS = [
     '.github/workflows/prefs.yml',
     '.github/workflows/build.yml',
 ]
-DOCS = ['TEST_REPORT_0371.txt', 'ABORT_TEST_0371.md']
+DOCS = []
 DIRS = ['source-v030', 'test_fixtures', 'prefs']
 
 def members():
