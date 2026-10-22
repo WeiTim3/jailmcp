@@ -206,7 +206,7 @@ class HTTP(Fixture):
         req=urllib.request.Request('http://127.0.0.1:%d/mcp'%self.port,body,headers=headers)
         return urllib.request.urlopen(req,timeout=3)
     def test_authenticated_list(self):
-        with self.post() as r:self.assertEqual(len(json.load(r)['result']['tools']),26)
+        with self.post() as r:self.assertEqual(len(json.load(r)['result']['tools']),31)
     def test_authentication_required(self):
         for headers in ({},{'Authorization':'Bearer incorrect'}):
             with self.assertRaises(urllib.error.HTTPError) as e:self.post(headers=headers)

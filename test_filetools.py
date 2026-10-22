@@ -479,7 +479,10 @@ class Chunks(Fixture):
         while True:
             chunk = self.call('jb_read_chunk', project='main', path='blob.bin', offset=reading,
                               length=131072)
-            self.assertEqual(chunk['sha256'], hashlib.sha256(payload).hexdigest())
+            # The whole-file digest is opt-in: reading N chunks must not hash the
+            # file N times. It is requested once, below.
+            self.assertIsNone(chunk['sha256'])
+            self.assertFalse(chunk['hashed'])
             self.assertEqual(chunk['total_size'], len(payload))
             rebuilt += base64.b64decode(chunk['data_base64'])
             reading += chunk['returned']
@@ -487,6 +490,10 @@ class Chunks(Fixture):
                 self.assertEqual(reading, len(payload))
                 break
         self.assertEqual(rebuilt, payload)
+        checked = self.call('jb_read_chunk', project='main', path='blob.bin', offset=0,
+                            length=1, want_sha256=True)
+        self.assertTrue(checked['hashed'])
+        self.assertEqual(checked['sha256'], hashlib.sha256(payload).hexdigest())
         self.assertEqual(len(pieces), 3)
 
     def test_full_size_chunk_accepted(self):
@@ -497,6 +504,18 @@ class Chunks(Fixture):
         chunk = self.call('jb_read_chunk', project='main', path='max.bin', length=b.MAX_CHUNK)
         self.assertEqual(base64.b64decode(chunk['data_base64']), piece)
         self.assertTrue(chunk['eof'])
+
+    def test_read_chunk_does_not_hash_unless_requested(self):
+        self.put('plain.bin', b'q' * 4096)
+        with patch.object(b, 'hash_leaf', wraps=b.hash_leaf) as hasher:
+            chunk = self.call('jb_read_chunk', project='main', path='plain.bin')
+            self.assertIsNone(chunk['sha256'])
+            self.assertFalse(chunk['hashed'])
+            self.assertEqual(hasher.call_count, 0)
+            checked = self.call('jb_read_chunk', project='main', path='plain.bin',
+                                want_sha256=True)
+            self.assertEqual(checked['sha256'], hashlib.sha256(b'q' * 4096).hexdigest())
+            self.assertEqual(hasher.call_count, 0)
 
     def test_expected_sha256_compare_and_swap(self):
         self.put('cas.bin', b'original')
@@ -744,7 +763,8 @@ class Uploads(Fixture):
         # The id is consumed and the staging is gone.
         self.assertEqual(self.upload_dirs(), [])
         # The file is a normal project file for every other tool.
-        read = self.call('jb_read_chunk', project='main', path='out.bin', length=131072)
+        read = self.call('jb_read_chunk', project='main', path='out.bin', length=131072,
+                         want_sha256=True)
         self.assertEqual(read['sha256'], hashlib.sha256(data).hexdigest())
         self.assertEqual(read['total_size'], len(data))
 
@@ -1206,6 +1226,11 @@ class Authorization(Fixture):
         'jb_upload_chunk': {'upload_id': 'a' * 32, 'offset': 0, 'data_base64': ''},
         'jb_upload_commit': {'upload_id': 'a' * 32, 'project': 'main', 'path': 'x'},
         'jb_upload_abort': {'upload_id': 'a' * 32},
+        'jb_chmod': {'project': 'main', 'path': 'x', 'mode': '0600'},
+        'jb_copy': {'project': 'main', 'src': 'x', 'dst': 'y'},
+        'jb_symlink': {'project': 'main', 'path': 'x', 'target': 'y'},
+        'jb_readlink': {'project': 'main', 'path': 'x'},
+        'jb_log_tail': {},
     }
 
     def test_registry_matches_expected_tools(self):
@@ -1215,15 +1240,16 @@ class Authorization(Fixture):
                     'jb_list_dir', 'jb_stat', 'jb_delete', 'jb_rename', 'jb_search',
                     'jb_read_chunk', 'jb_write_chunk', 'jb_projects',
                     'jb_mkdir', 'jb_upload_begin', 'jb_upload_chunk',
-                    'jb_upload_commit', 'jb_upload_abort', 'jb_find']
+                    'jb_upload_commit', 'jb_upload_abort', 'jb_find',
+                    'jb_chmod', 'jb_copy', 'jb_symlink', 'jb_readlink', 'jb_log_tail']
         self.assertEqual([tool['name'] for tool in b.TOOLS], expected)
         self.assertEqual(sorted(b.SPEC), sorted(expected))
         for tool in b.TOOLS:
             self.assertFalse(tool['inputSchema']['additionalProperties'])
-        self.assertEqual(b.VERSION, '0.3.10')
+        self.assertEqual(b.VERSION, '0.3.11')
         # 0.3.5 appends five tools after the twenty 0.3.4 tools: the first twenty
         # keep their exact names, order and schemas.
-        self.assertEqual(len(expected), 26)
+        self.assertEqual(len(expected), 31)
         self.assertEqual(b.SPEC['jb_mkdir']['required'], ['project', 'path'])
         self.assertEqual(sorted(b.SPEC['jb_mkdir']['properties']),
                          ['mode', 'parents', 'path', 'project'])
@@ -1302,7 +1328,7 @@ class Authorization(Fixture):
         self.assertEqual(sorted(device),
                          ['bridge', 'ios', 'machine', 'pid', 'release', 'source_sha256',
                           'system', 'uid'])
-        self.assertEqual(device['bridge'], '0.3.10')
+        self.assertEqual(device['bridge'], '0.3.11')
 
     def test_no_root_helper_no_token_no_root_widening(self):
         self.put('x', b'x')
@@ -1419,6 +1445,181 @@ class LegacyListdirSemantics(Fixture):
             os.stat('dir', dir_fd=fd, follow_symlinks=False)
         self.assertIn('dir', names)
 
+
+
+class Modes(Fixture):
+    def mode(self, path):
+        return stat.S_IMODE((self.project / path).stat().st_mode)
+
+    def test_write_and_edit_preserve_existing_mode(self):
+        if SHARED_METADATA: self.skipTest('shared mount ignores chmod')
+        self.put('run.sh', b'#!/bin/sh\necho hi\n', mode=0o755)
+        written = self.call('jb_write_file', project='main', path='run.sh',
+                            data_base64=base64.b64encode(b'#!/bin/sh\necho there\n').decode())
+        self.assertEqual(self.mode('run.sh'), 0o755)
+        edited = self.call('jb_edit_file', project='main', path='run.sh', old='there',
+                           new='again', expected_sha256=written['sha256'])
+        self.assertEqual(self.mode('run.sh'), 0o755)
+        self.assertEqual((self.project / 'run.sh').read_bytes(), b'#!/bin/sh\necho again\n')
+        self.call('jb_write_file', project='main', path='fresh.txt',
+                  data_base64=base64.b64encode(b'x').decode())
+        self.assertEqual(self.mode('fresh.txt'), 0o600)
+        self.call('jb_write_file', project='main', path='shared.txt',
+                  data_base64=base64.b64encode(b'x').decode(), mode='0640')
+        self.assertEqual(self.mode('shared.txt'), 0o640)
+        # Privileged bits are never preserved by an implicit rewrite.
+        self.put('suid.bin', b'x', mode=0o4755)
+        self.call('jb_write_file', project='main', path='suid.bin',
+                  data_base64=base64.b64encode(b'y').decode())
+        self.assertEqual(self.mode('suid.bin'), 0o755)
+
+    def test_chmod_regular_file_and_directory(self):
+        if SHARED_METADATA: self.skipTest('shared mount ignores chmod')
+        self.put('a.bin', b'a', mode=0o644)
+        (self.project / 'd').mkdir(mode=0o755)
+        changed = self.call('jb_chmod', project='main', path='a.bin', mode='0600')
+        self.assertEqual((changed['mode'], self.mode('a.bin')), ('0o600', 0o600))
+        changed = self.call('jb_chmod', project='main', path='d', mode='0700')
+        self.assertEqual((changed['type'], self.mode('d')), ('dir', 0o700))
+        # 0000 then back again: the owner can still change it by name.
+        self.call('jb_chmod', project='main', path='a.bin', mode='0000')
+        self.assertEqual(self.mode('a.bin'), 0o000)
+        self.call('jb_chmod', project='main', path='a.bin', mode='0600')
+        self.assertEqual(self.mode('a.bin'), 0o600)
+        for bad in ('4755', '7777', '999', '08', 0o600, '01000', ''):
+            with self.subTest(mode=bad), self.assertRaises(ValueError):
+                self.call('jb_chmod', project='main', path='a.bin', mode=bad)
+
+    def test_chmod_never_follows_a_symlink(self):
+        if SHARED_METADATA: self.skipTest('shared mount cannot create symlinks')
+        self.put('target.bin', b't', mode=0o644)
+        (self.project / 'link.bin').symlink_to('target.bin')
+        with self.assertRaises(ValueError):
+            self.call('jb_chmod', project='main', path='link.bin', mode='0600')
+        self.assertEqual(self.mode('target.bin'), 0o644)
+
+    def test_chunk_and_upload_modes(self):
+        if SHARED_METADATA: self.skipTest('shared mount ignores chmod')
+        self.call('jb_write_chunk', project='main', path='hook.sh', offset=0,
+                  data_base64=base64.b64encode(b'#!/bin/sh\n').decode(), mode='0755')
+        self.assertEqual(self.mode('hook.sh'), 0o755)
+        self.put('existing.sh', b'old', mode=0o750)
+        upload = self.call('jb_upload_begin')['upload_id']
+        self.call('jb_upload_chunk', upload_id=upload, offset=0,
+                  data_base64=base64.b64encode(b'new').decode())
+        self.call('jb_upload_commit', upload_id=upload, project='main',
+                  path='existing.sh', overwrite=True)
+        self.assertEqual(self.mode('existing.sh'), 0o750)
+        upload = self.call('jb_upload_begin')['upload_id']
+        self.call('jb_upload_chunk', upload_id=upload, offset=0,
+                  data_base64=base64.b64encode(b'fresh').decode())
+        committed = self.call('jb_upload_commit', upload_id=upload, project='main',
+                              path='fresh.sh', mode='0755')
+        self.assertEqual((committed['mode'], self.mode('fresh.sh')), ('0o755', 0o755))
+
+
+class CopyAndLinks(Fixture):
+    def test_copy_preserves_mode_and_refuses_overwrite(self):
+        self.put('src.bin', b'payload', mode=0o750)
+        result = self.call('jb_copy', project='main', src='src.bin', dst='dst.bin')
+        self.assertEqual((result['bytes'], result['sha256']),
+                         (7, hashlib.sha256(b'payload').hexdigest()))
+        self.assertEqual((self.project / 'dst.bin').read_bytes(), b'payload')
+        if not SHARED_METADATA:
+            self.assertEqual(stat.S_IMODE((self.project / 'dst.bin').stat().st_mode), 0o750)
+        with self.assertRaises(ValueError):
+            self.call('jb_copy', project='main', src='src.bin', dst='dst.bin')
+        replaced = self.call('jb_copy', project='main', src='src.bin', dst='dst.bin',
+                             overwrite=True, mode='0640')
+        self.assertTrue(replaced['replaced'])
+        if not SHARED_METADATA:
+            self.assertEqual(stat.S_IMODE((self.project / 'dst.bin').stat().st_mode), 0o640)
+        self.assertFalse((self.project / '.v030-copy-').exists())
+
+    def test_copy_does_not_carry_privileged_bits(self):
+        if SHARED_METADATA: self.skipTest('shared mount ignores chmod')
+        self.put('suid.bin', b'x', mode=0o4755)
+        self.call('jb_copy', project='main', src='suid.bin', dst='plain.bin')
+        self.assertEqual(stat.S_IMODE((self.project / 'plain.bin').stat().st_mode), 0o755)
+
+    def test_copy_across_projects_and_same_file_refusal(self):
+        (self.other / 's.txt').write_bytes(b'cross')
+        (self.project / 'sub').mkdir()
+        result = self.call('jb_copy', project='main', src_project='second', src='s.txt',
+                           dst='sub/d.txt')
+        self.assertEqual((self.project / 'sub' / 'd.txt').read_bytes(), b'cross')
+        self.assertEqual(result['src_project'], 'second')
+        with self.assertRaises(ValueError):
+            self.call('jb_copy', project='main', src='sub/d.txt', dst='sub/d.txt',
+                      overwrite=True)
+        with self.assertRaises(ValueError):
+            self.call('jb_copy', project='main', src='sub/d.txt', dst='nope/../d.txt')
+
+    def test_copy_refuses_symlink_and_hardlink(self):
+        if SHARED_METADATA: self.skipTest('shared mount cannot create links')
+        self.put('target.bin', b'target')
+        (self.project / 'link.bin').symlink_to('target.bin')
+        with self.assertRaises(ValueError):
+            self.call('jb_copy', project='main', src='link.bin', dst='copy.bin')
+        os.link(self.project / 'target.bin', self.project / 'hard.bin')
+        with self.assertRaises(ValueError):
+            self.call('jb_copy', project='main', src='hard.bin', dst='copy.bin')
+        self.assertFalse((self.project / 'copy.bin').exists())
+
+    def test_symlink_and_readlink_never_follow(self):
+        if SHARED_METADATA: self.skipTest('shared mount cannot create symlinks')
+        self.put('target.bin', b'target')
+        made = self.call('jb_symlink', project='main', path='link', target='target.bin')
+        self.assertEqual((made['target'], made['type']), ('target.bin', 'symlink'))
+        self.assertEqual(self.call('jb_readlink', project='main', path='link')['target'],
+                         'target.bin')
+        with self.assertRaises(ValueError):
+            self.call('jb_symlink', project='main', path='link', target='other')
+        with self.assertRaises(ValueError):
+            self.call('jb_readlink', project='main', path='target.bin')
+        # A symlinked component is never traversed by the file interface.
+        self.call('jb_symlink', project='main', path='up', target='..')
+        with self.assertRaises((ValueError, OSError)):
+            self.call('jb_read_file', project='main', path='up/etc/hosts')
+
+
+class ErrorContract(Fixture):
+    def rpc_call(self, name, arguments):
+        return b.rpc({'jsonrpc': '2.0', 'id': 7, 'method': 'tools/call',
+                      'params': {'name': name, 'arguments': arguments}})
+
+    def payload(self, response):
+        self.assertTrue(response['result']['isError'])
+        return json.loads(response['result']['content'][0]['text'])
+
+    def test_error_has_stable_code_and_log_reference(self):
+        payload = self.payload(self.rpc_call('jb_read_file',
+                                             {'project': 'main', 'path': 'missing.bin'}))
+        self.assertEqual(payload['error']['code'], 'ENOENT')
+        self.assertNotIn('missing.bin', payload['error']['message'])
+        ref = payload['error']['ref']
+        self.assertRegex(ref, '^[0-9a-f]{12}$')
+        tail = self.call('jb_log_tail', limit=10)
+        self.assertIn(ref, tail['text'])
+        self.assertIn('jb_read_file', tail['text'])
+        self.assertIn('ENOENT', tail['text'])
+
+    def test_invalid_arguments_are_einval(self):
+        payload = self.payload(self.rpc_call('jb_chmod',
+                                             {'project': 'main', 'path': 'x', 'mode': '999'}))
+        self.assertEqual(payload['error']['code'], 'EINVAL')
+        payload = self.payload(self.rpc_call('jb_read_file',
+                                             {'project': 'main', 'path': '../x'}))
+        self.assertEqual(payload['error']['code'], 'EINVAL')
+        self.assertNotIn('../x', payload['error']['message'])
+
+    def test_log_tail_is_bounded_and_absent_is_empty(self):
+        self.assertEqual(self.call('jb_log_tail')['available'], 0)
+        for _ in range(5):
+            self.rpc_call('jb_read_file', {'project': 'main', 'path': 'nope'})
+        tail = self.call('jb_log_tail', limit=2, max_bytes=1024)
+        self.assertLessEqual(tail['lines'], 2)
+        self.assertLessEqual(len(tail['text'].encode()), 1024)
 
 
 if __name__ == '__main__':

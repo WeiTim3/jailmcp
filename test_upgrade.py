@@ -38,7 +38,7 @@ def fixture_root():
     root = Path(tempfile.mkdtemp(prefix='run-', dir=str(FIXTURE_PARENT)))
     os.chmod(str(root), 0o700)
     return root
-RELEASES = ('0.3.3-1+experimental', '0.3.5-1+experimental')
+RELEASES = ('0.3.3-1+experimental', '0.3.5-1+experimental', '0.3.12-1+experimental')
 
 def tree_bytes(name):
     return (HERE / name if name == 'mobile_setup.py' else HERE / 'source-v030' / name).read_bytes()
@@ -46,13 +46,16 @@ def tree_bytes(name):
 def runtime_bytes(name, release):
     """Bytes of one root runtime file as installed by the given release.
 
-    The old bridges are extracted byte-for-byte from the shipped debs; every
-    other file is byte-identical between those releases (asserted by the
-    allowlist test), so the current tree copy is used for them.
+    The old bridges and the pre-0.3.13 runtime are extracted byte-for-byte from
+    the shipped debs; launcher.py and mobile_setup.py are byte-identical between
+    those releases (asserted by the allowlist test), so the current tree copy is
+    used for them.
     """
     if release is None: raise KeyError(release)
-    if release in ('0.3.3-1+experimental', '0.3.5-1+experimental') and name == 'bridge.py':
-        return (FIXTURES / ('bridge-%s.py' % release.split('+')[0])).read_bytes()
+    if (release in ('0.3.3-1+experimental', '0.3.5-1+experimental',
+                    '0.3.12-1+experimental') and
+            name in ('bridge.py', 'maintenance_runtime.py')):
+        return (FIXTURES / ('%s-%s.py' % (name[:-3], release.split('+')[0]))).read_bytes()
     return tree_bytes(name)
 
 PACKAGED = dict((name, hashlib.sha256(tree_bytes(name)).hexdigest()) for name in lc.RUNTIME)
@@ -456,6 +459,23 @@ class UpgradeSequenceTests(UpgradeCase):
         self.assertFalse(harness.transaction.exists())
         self.assert_user_state_preserved(before, harness)
 
+    def test_upgrade_from_the_immediately_previous_release(self):
+        """Regression: 0.3.12's root set was missing from KNOWN_SETS, so the
+        first in-place upgrade to 0.3.13 failed at upgrade-runtime-allowlist."""
+        harness = Harness(self, release='0.3.12-1+experimental')
+        before = harness.snapshot()
+        installed = dict((n, hashlib.sha256((harness.store / n).read_bytes()).hexdigest())
+                         for n in lc.RUNTIME)
+        self.assertEqual(lc.known_set(installed), '0.3.12-1')
+        harness.preinst('upgrade', '0.3.12-1+experimental')
+        harness.unpack()
+        harness.postinst('configure', lc.VERSION)
+        after = harness.snapshot()
+        self.assertEqual(after['store'], dict((n, runtime_bytes(n, lc.VERSION)) for n in lc.RUNTIME))
+        self.assertTrue(harness.launchd.registered)
+        self.assertEqual(harness.launchd.running, PACKAGED['bridge.py'])
+        self.assert_user_state_preserved(before, harness)
+
     def test_two_consecutive_upgrades_are_idempotent(self):
         harness = Harness(self, release='0.3.3-1+experimental')
         before = harness.snapshot()
@@ -716,6 +736,9 @@ class UpgradeHelperTests(UpgradeCase):
             self.assertEqual(lc.KNOWN_SETS['0.3.5-1'], release_hashes('0.3.5-1+experimental'))
             self.assertEqual(lc.known_set(release_hashes('0.3.3-1+experimental')), '0.3.3-1')
             self.assertEqual(lc.known_set(release_hashes('0.3.5-1+experimental')), '0.3.5-1')
+            self.assertEqual(lc.KNOWN_SETS['0.3.12-1'],
+                             release_hashes('0.3.12-1+experimental'))
+            self.assertEqual(lc.known_set(release_hashes('0.3.12-1+experimental')), '0.3.12-1')
             self.assertEqual(lc.known_set(release_hashes(lc.VERSION)), 'packaged ' + lc.VERSION)
             self.assertIsNone(lc.known_set(mixed))
             self.assertIsNone(lc.known_set(dict(mixed, **{'bridge.py': 'f' * 64})))
@@ -733,15 +756,22 @@ class UpgradeHelperTests(UpgradeCase):
         listed = {'0.3.6-1': '1d64cb7fe9de833751e0dc3d7a3fcb123b108afd99df07c27ffbed3b0539c385',
                   '0.3.9-1': 'e74d21d5cc1189911617d9e2b5f6e28dead7466f7cf68082206f9c9cc3aaaf43',
                   '0.3.10-1': '5401eca53b7446cedc5a8d82c7d3799fad1fc9e1aa219bfaea4bacdfd93d221d',
-                  '0.3.11-1': 'e4325d728807ead392e82c1bf1b63169e82069b7db30f3fae052c194d13cba94'}
+                  '0.3.11-1': 'e4325d728807ead392e82c1bf1b63169e82069b7db30f3fae052c194d13cba94',
+                  '0.3.12-1': '112cad8c67c5901be434046c1c5f48fadc89a2f93dfcee433e092419330c4191'}
         with patch.object(lc, 'HASHES', dict(PACKAGED)):
             for label, bridge in listed.items():
                 self.assertEqual(lc.KNOWN_SETS[label], hashes(bridge))
                 self.assertNotEqual(PACKAGED['bridge.py'], bridge)
                 self.assertEqual(lc.known_set(hashes(bridge)), label)
             self.assertEqual(lc.known_set(dict(PACKAGED)), 'packaged ' + lc.VERSION)
-            for name in ('launcher.py', 'maintenance_runtime.py', 'mobile_setup.py'):
+            for name in ('launcher.py', 'mobile_setup.py'):
                 self.assertEqual(PACKAGED[name], hashes(listed['0.3.6-1'])[name])
+            # 0.3.13 changes maintenance_runtime.py (write_at gains mode/preserve),
+            # so the historical sets keep the pre-change hash. The immediately
+            # previous release must still be accepted as an upgrade source.
+            self.assertNotEqual(PACKAGED['maintenance_runtime.py'],
+                                hashes(listed['0.3.11-1'])['maintenance_runtime.py'])
+            self.assertEqual(lc.known_set(hashes(listed['0.3.11-1'])), '0.3.11-1')
 
     def test_helper_refuses_when_packaged_bridge_changed(self):
         harness = Harness(self, release='0.3.3-1+experimental')

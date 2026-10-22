@@ -39,16 +39,33 @@ token 位于设备上（私密数据，勿分享）：
 
 安装后无需重启；卸载后可直接重装，**不必 purge**。
 
-## 工具（26 个）
+## 工具（31 个）
 
 - **信息**：`jb_device_info`、`jb_process_list`、`jb_maintenance_info`、`jb_projects`
 - **文件**：`jb_read_file`、`jb_write_file`、`jb_edit_file`、`jb_list_dir`、`jb_stat`、
-  `jb_mkdir`、`jb_delete`、`jb_rename`、`jb_search`、`jb_read_chunk`、`jb_write_chunk`
+  `jb_mkdir`、`jb_chmod`、`jb_delete`、`jb_rename`、`jb_copy`、`jb_symlink`、`jb_readlink`、
+  `jb_search`、`jb_read_chunk`、`jb_write_chunk`
 - **真实文件系统**：`jb_find`（用设备路径搜整机，自动落系统目录；可按**名字/内容**搜、按**大小**过滤，
   返回权限/属主/mtime；只读、有界）
 - **上传**：`jb_upload_begin` / `jb_upload_chunk` / `jb_upload_commit` / `jb_upload_abort`（原子就位）
 - **执行**：`jb_exec`、`jb_restart`
 - **更新**：`jb_stage_update`、`jb_validate_update`、`jb_apply_update`、`jb_rollback`
+- **诊断**：`jb_log_tail`
+
+## 文件权限、分块与错误
+
+- **权限保留**：`jb_write_file` / `jb_edit_file` / `jb_upload_commit` 保留目标文件原有权限位；
+  新文件默认 `0600`，需要可执行位时传 `mode="0755"`（也可用 `jb_chmod` 事后修改）。
+  符号链接永远不会被当作写入目标。
+- **分块是线性的**：`jb_read_chunk` / `jb_write_chunk` / `jb_upload_chunk` 的整文件 sha256
+  只在显式 `want_sha256=true`（写路径还有 `final=true`）时计算，返回体用 `hashed` 标明；
+  分块读写的成本随文件大小线性增长，而不是平方。
+- **结构化错误**：失败时返回
+  `{"error": {"code": "ENOENT", "message": "...", "ref": "..."}}`。`code` 是稳定的 errno 风格代码
+  （`ENOENT` / `EACCES` / `EINVAL` / `ENOSPC` …），`message` 不回显调用参数；完整异常写入
+  `.bridge-state/log-v030.jsonl`（`0600`，256 KiB 上限，原地轮转），用 `jb_log_tail` 按 `ref` 查看。
+- **单次上限**：`jb_read_file` / `jb_write_file` 单次 128 KiB；大文件用 `jb_read_chunk` /
+  `jb_upload_*`。`jb_copy` 单文件 256 MiB。
 
 ## 路径约定：系统目录优先，越狱目录次之
 
@@ -73,13 +90,19 @@ token 位于设备上（私密数据，勿分享）：
 ## 安全边界（务必阅读）
 
 - `jb_exec` 是 **mobile 权限任意 Shell，不是沙箱**，能访问 mobile 有权访问的一切。
+- `jb_find` 以 mobile 身份读取**整机数据卷**（含其它 App 的容器），只读但有内容搜索能力；
+  只应在你信任当前对话与模型的前提下使用。
+- 同 UID 的未沙盒进程（越狱插件/守护进程）可以读取 token 与状态目录，**token 不是越狱级恶意软件的边界**。
+  安装时 `allow_mobile_shell` 默认为 `true`，可在 `.bridge-state/config-v030.json` 改为 `false` 后重启服务。
 - 本包**不提供 root helper、不做免密 sudo**；需 root 时由你在越狱终端手动执行。
 - 文件工具只能访问项目根 `/var/mobile/Documents/OpenMinis-Jailbreak`；`.bridge-state` 与 `..` 不可达。
-- 只绑回环 + Bearer 认证；升级只认**白名单**内已知良好版本，先校验后改动；token 永不读取/打印/上传。
+- 只绑回环 + Bearer 认证，并校验 `Host`/`Origin` 以防 DNS rebinding；升级只认**白名单**内已知良好版本，
+  先校验后改动；token 永不读取/打印/上传。
 
 ## 升级与回退
 
-- **原地升级**：Sileo 直接更新，token/config/audit 保留，无需重配 MCP。
+- **原地升级**：用新 `.deb` 覆盖安装（Sileo 配置了本仓库的软件源时可直接更新），
+  token/config/audit 保留，无需重配 MCP。
 - **中断自动恢复**：dpkg 解包失败时自动从同 boot 快照还原，绝不卡住 dpkg。
 - **一键回退**：`sudo /usr/local/bin/openminis-jb-restore-runtime [--dry-run]`
   （恢复上一份运行时；dpkg 仍记新版本号，装旧 .deb 不推荐）。
@@ -88,20 +111,23 @@ token 位于设备上（私密数据，勿分享）：
 
 ```sh
 python3 build.py            # 生成 .deb（可复现：两次构建字节一致）
-python3 test_package.py test_api.py
+python3 test_package.py
+python3 test_api.py
+python3 test_filetools.py   # 文件接口 / 权限 / 错误契约
+python3 test_safety.py      # 需要 root 与 UID 501 测试环境
 python3 test_supervisor.py  # 真实子进程
 python3 test_upgrade.py     # 模拟完整 dpkg 序列
 ```
 
-233 项测试全过（见 `TEST_REPORT_0381.txt`）。
+仓库内共 247 项测试；CI 在完整测试集之外，额外用 Python 3.9 运行非特权测试。
 
 ## 状态
 
-`0.3.8-1+experimental`（bridge `0.3.6`，API `3`）。核心能力均真机验证：安装/卸载/重装/原地升级/
+`0.3.13-2+experimental`（bridge `0.3.11`，API `3`）。核心能力均真机验证：安装/卸载/重装/原地升级/
 中断恢复/一键回退/自更新/坏版本回退/重启重越狱恢复/压力边界。仅 EXDEV 跨卷回退未真机触发。
 
-**已知限制**：递归删除非原子（>10000 条目须分片）；`jb_exec` 子进程每文件 256 KiB 上限；
+**已知限制**：递归删除非原子（>10000 条目须分片）；`jb_exec` 子进程每文件 256 KiB 上限、
+最长 60 秒、无后台任务；单次 `jb_write_file` 128 KiB；`jb_copy` 不保留 mtime/xattr。
 状态文件须 0600。
-（分块写入/上传的整文件哈希只在该块 `final=true` 或显式 `want_sha256=true` 时计算，多块写入为线性成本。）
 
 实验性项目，请自行评估风险后安装。

@@ -1,11 +1,41 @@
-# OpenMinis-Jailbreak 0.3.12-1+experimental
+# OpenMinis-Jailbreak 0.3.13-2+experimental
 
 以 launchd 服务形式运行、通过本机 MCP 向 OpenMinis 提供越狱侧能力的服务包。
 OpenMinis 本体不需要越狱权限、不需要注入、不需要改签名。
 
 完整说明见项目自述文件；本文档随包安装，只记录版本相关信息。
 
-## 本版改动（0.3.12）
+## 本版改动（0.3.13）
+
+> `0.3.13-2` 是打包修订：补上 `0.3.12-1` 的运行库白名单条目。`0.3.13-1` 会在
+> `upgrade-runtime-allowlist` 阶段拒绝从 0.3.12 升级（bridge 仍是 `0.3.11`，功能相同）。
+
+bridge 版本提升到 `0.3.11`，修掉三处会直接影响日常使用的问题，并补了四个文件工具。
+
+**1. 分块读取不再重复整文件哈希。** `jb_read_chunk` 过去每读一块都重算整个文件的 sha256，
+下载 256 MiB 文件要额外读取约 137 GB。现在 `sha256` 默认是 `null`，只有 `want_sha256=true`
+时才计算（返回体新增 `hashed`）；需要校验时在最后一块请求一次即可。
+
+**2. 写入不再把文件权限改成 0600。** `jb_write_file` / `jb_edit_file` / `jb_upload_commit`
+现在保留目标文件原有的权限位；新文件默认 0600，可用 `mode="0755"` 显式指定。`jb_upload_commit`
+新增 `mode` 参数，上传的脚本不会再丢失可执行位。
+
+**3. 错误可诊断，但不对模型泄露细节。** 工具失败时返回
+`{"error": {"code": "ENOENT", "message": "...", "ref": "..."}}`，`code` 是稳定的 errno 风格代码；
+完整的异常文本写入私有 `0600` 日志 `.bridge-state/log-v030.jsonl`（256 KiB 上限、原地轮转），
+用新工具 `jb_log_tail` 按 `ref` 查看。HTTP 认证失败也会记录（10 秒节流）。
+
+**新增工具（26 → 31）：**
+
+- `jb_chmod`：设置文件/目录权限（`0000`–`0777`，拒绝特权位），不跟随符号链接；
+- `jb_copy`：项目内/跨项目复制普通文件，原子落位并保留权限；
+- `jb_symlink` / `jb_readlink`：创建和读取符号链接，任何文件工具都不会跟随它；
+- `jb_log_tail`：读取最新一段错误日志。
+
+`maintenance_runtime.py` 的 `write_at()` 增加了 `mode` / `preserve` 参数（状态文件仍固定 0600）；
+`launcher.py` / `mobile_setup.py` 未变。
+
+## 历史（0.3.12）
 
 **消除分块写入/上传的 O(n²) 整文件重算哈希**（bridge 版本提升到 `0.3.10`）。此前每写一块都会重算**整个文件**的
 sha256 —— 256 MiB 分 1024 块约等于读取 137 GB，吞吐随体积单调衰减。

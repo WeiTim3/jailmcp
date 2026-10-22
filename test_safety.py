@@ -185,7 +185,7 @@ class SafetyTests(unittest.TestCase):
         # 0.3.3 shipped twelve tools; 0.3.4 added the eight file-interface tools;
         # 0.3.5 appends jb_mkdir and the four staged-upload tools and must not have
         # changed, removed or reordered anything that shipped before it.
-        self.assertEqual(len(bridge.TOOLS),26)
+        self.assertEqual(len(bridge.TOOLS),31)
         self.assertEqual([tool['name'] for tool in bridge.TOOLS][:12],
                          ['jb_device_info','jb_process_list','jb_maintenance_info','jb_read_file',
                           'jb_write_file','jb_edit_file','jb_exec','jb_stage_update',
@@ -195,16 +195,18 @@ class SafetyTests(unittest.TestCase):
                           'jb_read_chunk','jb_write_chunk','jb_projects'])
         self.assertEqual([tool['name'] for tool in bridge.TOOLS][20:],
                          ['jb_mkdir','jb_upload_begin','jb_upload_chunk','jb_upload_commit',
-                          'jb_upload_abort','jb_find'])
+                          'jb_upload_abort','jb_find','jb_chmod','jb_copy','jb_symlink',
+                          'jb_readlink','jb_log_tail'])
         self.assertEqual(sorted(bridge.SPEC),sorted(tool['name'] for tool in bridge.TOOLS))
         for tool in bridge.TOOLS:
             self.assertFalse(tool['inputSchema']['additionalProperties'])
-        self.assertEqual(bridge.VERSION,'0.3.10')
+        self.assertEqual(bridge.VERSION,'0.3.11')
         self.assertEqual(rt.STATE,Path('/var/mobile/Documents/OpenMinis-Jailbreak/.bridge-state'))
         # No new tool can widen its own roots: none takes a 'projects' argument and
         # none reaches outside the configured roots.
         for name in ('jb_mkdir','jb_upload_begin','jb_upload_chunk','jb_upload_commit',
-                     'jb_upload_abort'):
+                     'jb_upload_abort','jb_chmod','jb_copy','jb_symlink','jb_readlink',
+                     'jb_log_tail'):
             self.assertNotIn('projects',bridge.SPEC[name]['properties'])
         source=Path(bridge.__file__).read_text()
         self.assertIn("'api': 3",source)          # the API level is unchanged

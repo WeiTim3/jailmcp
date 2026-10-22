@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 import maintenance_runtime as rt
 
-VERSION = '0.3.10'
+VERSION = '0.3.11'
 # One full 262144-byte chunk is ~349528 base64 characters; the transport limit
 # must cover that plus the JSON envelope so jb_write_chunk can accept MAX_CHUNK.
 MAX_BODY = 400000
@@ -67,10 +67,10 @@ tool('jb_device_info', 'OS, process UID/PID, exact running source SHA256.')
 tool('jb_process_list', 'Bounded process names/PIDs/UIDs; no process arguments.')
 tool('jb_maintenance_info', 'Authority, configuration and supervisor status; no token.')
 tool('jb_read_file', 'Read a mobile-owned regular project file; private state excluded.', FILE, FILE)
-tool('jb_write_file', 'Atomic create/overwrite base64 file; optional compare-and-swap SHA256.',
-     dict(FILE, data_base64=STRING, expected_sha256=SHA), ('project', 'path', 'data_base64'))
-tool('jb_edit_file', 'Replace exactly ONE UTF-8 match atomically; expected SHA256 required.',
-     dict(FILE, old=STRING, new=STRING, expected_sha256=SHA), ('project', 'path', 'old', 'new', 'expected_sha256'))
+tool('jb_write_file', 'Atomic create/overwrite base64 file; optional compare-and-swap SHA256. An existing regular file keeps its permission bits; mode overrides, new files default to 0600.',
+     dict(FILE, data_base64=STRING, expected_sha256=SHA, mode=STRING), ('project', 'path', 'data_base64'))
+tool('jb_edit_file', 'Replace exactly ONE UTF-8 match atomically; expected SHA256 required. An existing regular file keeps its permission bits unless mode is given.',
+     dict(FILE, old=STRING, new=STRING, expected_sha256=SHA, mode=STRING), ('project', 'path', 'old', 'new', 'expected_sha256'))
 tool('jb_exec', 'Explicitly authorized arbitrary mobile shell. NOT sandboxed. No root helper; no inherited secrets.',
      {'project': STRING, 'command': STRING, 'timeout': {'type': 'integer', 'minimum': 1, 'maximum': 60},
       'output_limit': {'type': 'integer', 'minimum': 1, 'maximum': 32768}}, ('project', 'command'))
@@ -95,12 +95,13 @@ tool('jb_search', 'Bounded walk from root (private state skipped, symlinked dire
       'limit': {'type': 'integer', 'minimum': 1, 'maximum': 1000},
       'max_files': {'type': 'integer', 'minimum': 1, 'maximum': 100000},
       'max_file_bytes': {'type': 'integer', 'minimum': 1, 'maximum': 16777216}}, ('project',))
-tool('jb_read_chunk', 'Base64 chunk of a regular file (<=262144 bytes) with the sha256 and size of the WHOLE file and an eof flag.',
+tool('jb_read_chunk', 'Base64 chunk of a regular file (<=262144 bytes) with the total size and an eof flag. sha256 is null unless want_sha256=true, because hashing the WHOLE file on every chunk is quadratic; ask for it once (for example on the last chunk) when you need an integrity check.',
      dict(FILE, offset={'type': 'integer', 'minimum': 0},
-          length={'type': 'integer', 'minimum': 1, 'maximum': 262144}), FILE)
+          length={'type': 'integer', 'minimum': 1, 'maximum': 262144},
+          want_sha256=BOOL), FILE)
 tool('jb_write_chunk', 'Write base64 at an offset, creating the file if absent. Multi-chunk writes are NOT atomic; expected_sha256 compare-and-swaps the current content before writing and only protects when supplied; truncate requires offset 0; final fsyncs. The whole-file sha256 is computed only on the final chunk or with want_sha256, so a multi-chunk write costs linear time rather than re-reading the file every chunk.',
      dict(FILE, offset={'type': 'integer', 'minimum': 0}, data_base64=STRING,
-          expected_sha256=SHA, truncate=BOOL, final=BOOL, want_sha256=BOOL),
+          expected_sha256=SHA, truncate=BOOL, final=BOOL, want_sha256=BOOL, mode=STRING),
      ('project', 'path', 'offset', 'data_base64'))
 tool('jb_projects', 'Configured project roots with current existence/directory status. Read-only: no tool can add or widen roots.')
 tool('jb_mkdir', 'Create ONE directory inside a project root through the same dirfd + O_NOFOLLOW traversal as the other file tools: no absolute path, no empty/. /.. component, no symlinked component, never the private state directory. parents=false requires the parent to exist; parents=true creates missing components one at a time, each reopened with O_NOFOLLOW. mode is an octal string 0700..0777 (privileged bits refused) applied under a restrictive umask so the result can never exceed it. An existing leaf is refused and reported as a directory, file, symlink or other.',
@@ -112,7 +113,7 @@ tool('jb_upload_chunk', 'Write base64 at an offset inside a staged upload with t
       'expected_sha256': SHA, 'want_sha256': BOOL}, ('upload_id', 'offset', 'data_base64'))
 tool('jb_upload_commit', 'Verify the assembled upload (against expected_sha256 when supplied) and install it at project/path with ONE os.replace anchored on the destination dirfd, so the name holds either the old file or the complete new data and never a partial write. Refuses an existing destination unless overwrite=true, never replaces a directory, a symlink or a foreign/hardlinked file, refuses the private state directory, and removes the staging so the id cannot be reused. A refused commit changes nothing.',
      {'upload_id': STRING, 'project': STRING, 'path': STRING, 'expected_sha256': SHA,
-      'overwrite': BOOL}, ('upload_id', 'project', 'path'))
+      'overwrite': BOOL, 'mode': STRING}, ('upload_id', 'project', 'path'))
 tool('jb_upload_abort', 'Discard a staged upload and its idempotent opaque id; the id can never be reused afterwards and only the upload area is touched.',
      {'upload_id': STRING}, ('upload_id',))
 tool('jb_find', 'Read-only search over the REAL device tree: a name glob and/or a literal file-content string (with 1-based line and a bounded excerpt), a size range, and per-match metadata (mode, uid, gid, mtime). Give paths the way the device uses them: /var/... is read as /private/var/... under /rootfs, so /var/mobile/Documents means the real SYSTEM data volume (default path /var/mobile). jailbreak=true searches the bridge\'s own view instead (which lands in the jbroot); a path already under /rootfs is used as-is. Bounded by wall clock, entry count, depth, match count and per-file bytes; symlinked directories are never entered; nothing can be written.',
@@ -123,6 +124,18 @@ tool('jb_find', 'Read-only search over the REAL device tree: a name glob and/or 
       'min_bytes': {'type': 'integer', 'minimum': 0},
       'max_bytes': {'type': 'integer', 'minimum': 0},
       'max_file_bytes': {'type': 'integer', 'minimum': 1, 'maximum': 16777216}}, ())
+tool('jb_chmod', 'Set permission bits on one mobile-owned file or directory (octal 0000-0777, privileged bits refused). Symlinks are never followed and the descriptor is fstat-checked before and after. Removing owner search permission from a directory makes its subtree unreachable through the file tools until it is restored by path.',
+     dict(FILE, mode=STRING), ('project', 'path', 'mode'))
+tool('jb_copy', 'Copy one regular mobile-owned file to an atomic destination inside the same project (or another project with src_project), preserving its permission bits unless mode is given. Refuses symlinks, hardlinks, other non-regular files, an existing destination without overwrite, and files above 256 MiB.',
+     {'project': STRING, 'src': STRING, 'dst': STRING, 'src_project': STRING,
+      'overwrite': BOOL, 'mode': STRING}, ('project', 'src', 'dst'))
+tool('jb_symlink', 'Create one symlink at a project path. The target string is stored verbatim, is never followed by any file tool, and an existing destination is refused.',
+     dict(FILE, target=STRING), ('project', 'path', 'target'))
+tool('jb_readlink', 'Read the target string of one symlink without following it.',
+     FILE, FILE)
+tool('jb_log_tail', 'Newest bounded slice of the local error log: time, tool name, error code and exception text only (never arguments or file contents). Read-only.',
+     {'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200},
+      'max_bytes': {'type': 'integer', 'minimum': 1024, 'maximum': 65536}}, ())
 
 SPEC = {x['name']: x['inputSchema'] for x in TOOLS}
 
@@ -198,6 +211,12 @@ MAX_FIND_LIMIT = 1000            # jb_find match cap
 MAX_FIND_DEPTH = 32
 MAX_FIND_SECONDS = 30
 MAX_FIND_ENTRIES = 200000
+MAX_COPY_BYTES = 268435456      # jb_copy may not copy more than 256 MiB
+MAX_LINK_TARGET = 1024          # jb_symlink target string bound
+LOG_NAME = 'log-v030.jsonl'     # private state, 0600, rotated in place
+LOG_MAX = 262144                # rewrite once the log grows past 256 KiB
+LOG_KEEP = 131072               # keep the newest 128 KiB after a rotation
+MAX_LOG_LINES = 200
 
 def kind_of(mode):
     if stat.S_ISLNK(mode): return 'symlink'
@@ -399,6 +418,152 @@ def tool_rename(args):
         os.rename(src_leaf, dst_leaf, src_dir_fd=src_parent, dst_dir_fd=dst_parent)
         return {'renamed': True, 'src': args['src'], 'dst': args['dst'],
                 'overwritten': existing is not None}
+
+def chmod_at(parent, leaf, mode):
+    """Change mode through a descriptor; fall back to an fd-anchored name.
+
+    fchmod is preferred because it cannot be redirected by a rename. A file the
+    owner cannot open (for example after chmod 0000) is handled through
+    /dev/fd/<dir>/<name>, which is still anchored on the project directory and
+    is re-checked against the lstat inode first.
+    """
+    before = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+    kind = kind_of(before.st_mode)
+    if kind not in ('file', 'dir'): raise ValueError('Not a regular file or directory')
+    if before.st_uid != os.geteuid(): raise ValueError('Not mobile-owned')
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    if kind == 'dir': flags |= os.O_DIRECTORY
+    try:
+        handle = os.open(leaf, flags, dir_fd=parent)
+    except PermissionError:
+        again = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+        if ((again.st_dev, again.st_ino) != (before.st_dev, before.st_ino) or
+                stat.S_ISLNK(again.st_mode)):
+            raise ValueError('Changed during chmod')
+        os.chmod('/dev/fd/%d/%s' % (parent, leaf), mode)
+        after = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+        return kind, stat.S_IMODE(after.st_mode)
+    try:
+        opened = os.fstat(handle)
+        if ((opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino) or
+                opened.st_uid != os.geteuid()):
+            raise ValueError('Changed during chmod')
+        os.fchmod(handle, mode)
+        return kind, stat.S_IMODE(os.fstat(handle).st_mode)
+    finally:
+        os.close(handle)
+
+def tool_chmod(args):
+    mode = parse_mode(args['mode'], 0o000, 0o777)
+    with rt.target(args['project'], args['path']) as (parent, leaf):
+        if leaf == PRIVATE: raise ValueError('Private state')
+        kind, applied = chmod_at(parent, leaf, mode)
+    return {'changed': True, 'project': args['project'], 'path': args['path'],
+            'type': kind, 'mode': oct(applied), 'requested_mode': oct(mode)}
+
+def tool_copy(args):
+    overwrite = args.get('overwrite', False)
+    requested = parse_mode(args['mode'], 0o000, 0o777) if 'mode' in args else None
+    src_project = args.get('src_project', args['project'])
+    with rt.target(args['project'], args['dst']) as (dst_parent, dst_leaf), \
+         rt.target(src_project, args['src']) as (src_parent, src_leaf):
+        if dst_leaf == PRIVATE or src_leaf == PRIVATE: raise ValueError('Private state')
+        source_st = os.stat(src_leaf, dir_fd=src_parent, follow_symlinks=False)
+        if (not stat.S_ISREG(source_st.st_mode) or source_st.st_nlink != 1 or
+                source_st.st_uid != os.geteuid()):
+            raise ValueError('Unsafe source')
+        if source_st.st_size > MAX_COPY_BYTES: raise ValueError('Source too large')
+        try: existing = os.stat(dst_leaf, dir_fd=dst_parent, follow_symlinks=False)
+        except FileNotFoundError: existing = None
+        if existing is not None:
+            if (not stat.S_ISREG(existing.st_mode) or existing.st_nlink != 1 or
+                    existing.st_uid != os.geteuid()):
+                raise ValueError('Unsafe destination')
+            if overwrite is not True: raise ValueError('Destination exists')
+            if (existing.st_dev, existing.st_ino) == (source_st.st_dev, source_st.st_ino):
+                raise ValueError('Source and destination are the same file')
+        mode = (requested if requested is not None else
+                (stat.S_IMODE(existing.st_mode) & 0o777) if existing is not None else
+                (stat.S_IMODE(source_st.st_mode) & 0o777))
+        temp = '.v030-copy-' + os.urandom(12).hex()
+        source = os.open(src_leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                         dir_fd=src_parent)
+        try:
+            opened = os.fstat(source)
+            if ((opened.st_dev, opened.st_ino) != (source_st.st_dev, source_st.st_ino) or
+                    not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1 or
+                    opened.st_uid != os.geteuid()):
+                raise ValueError('Changed during copy')
+            handle = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=dst_parent)
+            try:
+                os.fchmod(handle, mode)
+                digest = hashlib.sha256(); total = 0
+                while True:
+                    block = os.read(source, 1048576)
+                    if not block: break
+                    total += len(block)
+                    if total > MAX_COPY_BYTES: raise ValueError('Source too large')
+                    digest.update(block)
+                    written = 0
+                    while written < len(block):
+                        written += os.write(handle, block[written:])
+                os.fsync(handle)
+            finally:
+                os.close(handle)
+            os.replace(temp, dst_leaf, src_dir_fd=dst_parent, dst_dir_fd=dst_parent)
+            os.fsync(dst_parent)
+        finally:
+            os.close(source)
+            try: os.unlink(temp, dir_fd=dst_parent)
+            except FileNotFoundError: pass
+    return {'copied': True, 'src_project': src_project, 'src': args['src'],
+            'project': args['project'], 'dst': args['dst'], 'bytes': total,
+            'sha256': digest.hexdigest(), 'mode': oct(mode),
+            'replaced': existing is not None, 'atomic': True}
+
+def tool_symlink(args):
+    target = args['target']
+    if (not isinstance(target, str) or not target or len(target) > MAX_LINK_TARGET or
+            '\x00' in target):
+        raise ValueError('Invalid link target')
+    with rt.target(args['project'], args['path']) as (parent, leaf):
+        if leaf == PRIVATE: raise ValueError('Private state')
+        try: os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError: pass
+        else: raise ValueError('Destination exists')
+        os.symlink(target, leaf, dir_fd=parent)
+        made = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+        if not stat.S_ISLNK(made.st_mode): raise ValueError('Link was not created')
+    return {'created': True, 'project': args['project'], 'path': args['path'],
+            'target': target, 'type': 'symlink'}
+
+def tool_readlink(args):
+    with rt.target(args['project'], args['path']) as (parent, leaf):
+        st = os.stat(leaf, dir_fd=parent, follow_symlinks=False)
+        if not stat.S_ISLNK(st.st_mode): raise ValueError('Not a symlink')
+        target = os.readlink(leaf, dir_fd=parent)
+    return {'path': args['path'], 'target': target, 'type': 'symlink',
+            'target_bytes': len(target.encode('utf-8', 'surrogateescape'))}
+
+def tool_log_tail(args):
+    limit = args.get('limit', 50); max_bytes = args.get('max_bytes', 16384)
+    if type(limit) is not int or not 1 <= limit <= MAX_LOG_LINES:
+        raise ValueError('Invalid limit')
+    if type(max_bytes) is not int or not 1024 <= max_bytes <= 65536:
+        raise ValueError('Invalid max_bytes')
+    with rt.state() as fd:
+        try: data = rt.read_at(fd, LOG_NAME, LOG_MAX, True)
+        except FileNotFoundError: data = b''
+    lines = data.decode('utf-8', 'replace').splitlines()
+    selected = []; used = 0
+    for line in reversed(lines[-limit:]):
+        if used + len(line) + 1 > max_bytes: break
+        selected.append(line); used += len(line) + 1
+    selected.reverse()
+    return {'log': LOG_NAME, 'lines': len(selected), 'available': len(lines),
+            'dropped': len(lines) - len(selected), 'max_bytes': max_bytes,
+            'text': '\n'.join(selected)}
 
 def excerpt_line(text, index):
     begin = text.rfind('\n', 0, index) + 1
@@ -634,15 +799,18 @@ def tool_find(args):
 
 def tool_read_chunk(args):
     offset = args.get('offset', 0); length = args.get('length', 131072)
+    want = args.get('want_sha256', False) is True
     if not 0 <= offset <= MAX_OFFSET: raise ValueError('Invalid offset')
     if not 1 <= length <= MAX_CHUNK: raise ValueError('Invalid length')
     with rt.target(args['project'], args['path']) as (parent, leaf):
-        sha, size = hash_leaf(parent, leaf)
-        if offset > size: raise ValueError('Offset beyond end of file')
         handle = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
         try:
             st = os.fstat(handle)
-            if not stat.S_ISREG(st.st_mode): raise ValueError('Not a regular file')
+            if (not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or
+                    st.st_uid != os.geteuid()):
+                raise ValueError('Unsafe file')
+            size = st.st_size
+            if offset > size: raise ValueError('Offset beyond end of file')
             os.lseek(handle, offset, os.SEEK_SET)
             blocks = []; remaining = length
             while remaining > 0:
@@ -650,16 +818,30 @@ def tool_read_chunk(args):
                 if not block: break
                 blocks.append(block); remaining -= len(block)
             data = b''.join(blocks)
+            # The whole-file digest is opt-in. Hashing on every chunk turned an
+            # N-chunk read into N full-file reads (a 256 MiB file at 256 KiB per
+            # chunk re-read ~137 GB). Same rule as jb_write_chunk: ask once.
+            digest = None
+            if want:
+                os.lseek(handle, 0, os.SEEK_SET)
+                hasher = hashlib.sha256()
+                while True:
+                    block = os.read(handle, 1048576)
+                    if not block: break
+                    hasher.update(block)
+                digest = hasher.hexdigest()
         finally:
             os.close(handle)
     return {'path': args['path'], 'offset': offset, 'length': length,
-            'returned': len(data), 'total_size': size, 'sha256': sha,
+            'returned': len(data), 'total_size': size,
+            'sha256': digest, 'hashed': digest is not None,
             'eof': offset + len(data) >= size,
             'data_base64': base64.b64encode(data).decode()}
 
 def tool_write_chunk(args):
     offset = args['offset']; expected = args.get('expected_sha256', '')
     truncate = args.get('truncate', False); final = args.get('final', False)
+    requested = parse_mode(args['mode'], 0o000, 0o777) if 'mode' in args else None
     data = decode_chunk(args['data_base64'])
     if not 0 <= offset <= MAX_OFFSET: raise ValueError('Invalid offset')
     if offset + len(data) > MAX_WRITE_TOTAL: raise ValueError('Size limit exceeded')
@@ -690,8 +872,10 @@ def tool_write_chunk(args):
             written = 0
             while written < len(data):
                 written += os.write(handle, data[written:])
+            if requested is not None: os.fchmod(handle, requested)
             if final is True: os.fsync(handle)
             size = os.fstat(handle).st_size
+            applied = stat.S_IMODE(os.fstat(handle).st_mode)
         finally:
             os.close(handle)
         # Hashing the WHOLE file after every chunk is quadratic - a 256 MiB file
@@ -699,7 +883,7 @@ def tool_write_chunk(args):
         # caller that asks, pays for it (size is a cheap fstat).
         sha = hash_leaf(parent, leaf)[0] if (final is True or args.get('want_sha256') is True) else None
     return {'written': len(data), 'offset': offset, 'sha256': sha, 'size': size,
-            'synced': final is True, 'truncated': truncate is True,
+            'mode': oct(applied), 'synced': final is True, 'truncated': truncate is True,
             'atomic': False, 'cas_checked': bool(expected), 'hashed': sha is not None}
 
 def projects_info():
@@ -734,8 +918,8 @@ def same_private(fd):
     value = os.fstat(fd)
     return (value.st_dev, value.st_ino) == identity
 
-def parse_mode(value):
-    """Octal string limited to 0700..0777; privileged bits are refused outright."""
+def parse_mode(value, minimum=MKDIR_MIN, maximum=MKDIR_MAX):
+    """Octal string limited to `minimum`..`maximum`; privileged bits refused."""
     if not isinstance(value, str) or not 3 <= len(value) <= 4:
         raise ValueError('Invalid mode string')
     if len(value) == 4 and value[0] != '0':
@@ -745,7 +929,8 @@ def parse_mode(value):
         raise ValueError('Invalid mode string')
     mode = int(digits, 8)
     if mode & 0o7000: raise ValueError('Privileged mode bits refused')
-    if not MKDIR_MIN <= mode <= MKDIR_MAX: raise ValueError('Mode outside 0700-0777')
+    if not minimum <= mode <= maximum:
+        raise ValueError('Mode outside %04o-%04o' % (minimum, maximum))
     return mode
 
 def mkdir_at(parent, leaf, mode):
@@ -1013,16 +1198,26 @@ def tool_upload_chunk(args):
             'visible_in_project': False, 'atomic': False,
             'note': 'Staged only; jb_upload_commit installs the whole file atomically.'}
 
-def install_staged(up, parent, leaf):
+def install_staged(up, parent, leaf, mode=0o600):
     """Install the staged bytes under the destination dirfd.
 
     The normal path is ONE os.replace, which makes the destination name hold
-    either the old file or the complete new file, never a partial one. When the
-    staging area and the project are on different filesystems (EXDEV) the bytes
-    are copied into a private temporary file in the DESTINATION directory, which
-    is fsynced and then os.replace'd in: the destination is likewise never
-    partial, and the temporary file is removed on every failure path.
+    either the old file or the complete new file, never a partial one. The
+    staged descriptor's mode is pinned first, so an uploaded 0755 script stays
+    executable instead of silently becoming 0600. When the staging area and the
+    project are on different filesystems (EXDEV) the bytes are copied into a
+    private temporary file in the DESTINATION directory, which is fsynced and
+    then os.replace'd in: the destination is likewise never partial, and the
+    temporary file is removed on every failure path.
     """
+    staged = os.open('data', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=up)
+    try:
+        st = os.fstat(staged)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != os.geteuid():
+            raise ValueError('Unsafe staging')
+        os.fchmod(staged, mode)
+    finally:
+        os.close(staged)
     try:
         os.replace('data', leaf, src_dir_fd=up, dst_dir_fd=parent)
         return 'moved'
@@ -1037,6 +1232,7 @@ def install_staged(up, parent, leaf):
         handle = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                          0o600, dir_fd=parent)
         try:
+            os.fchmod(handle, mode)
             while True:
                 block = os.read(source, 1048576)
                 if not block: break
@@ -1057,6 +1253,7 @@ def tool_upload_commit(args):
     upload_id = valid_upload_id(args['upload_id'])
     expected = args.get('expected_sha256', '')
     overwrite = args.get('overwrite', False)
+    requested = parse_mode(args['mode'], 0o000, 0o777) if 'mode' in args else None
     parts = relative_parts(args['path'])
     if parts[-1] == PRIVATE: raise ValueError('Private state')
     if expected: rt.valid_sha(expected)
@@ -1084,14 +1281,18 @@ def tool_upload_commit(args):
                             or existing.st_uid != os.geteuid()):
                         raise ValueError('Unsafe destination')
                     replaced = True
-                install = install_staged(up, parent, leaf)
+                mode = (requested if requested is not None else
+                        (stat.S_IMODE(existing.st_mode) & 0o777) if existing is not None
+                        else 0o600)
+                install = install_staged(up, parent, leaf, mode)
                 os.fsync(parent)
         finally:
             os.close(up)
         removed = destroy_staging(uploads, upload_id)
     return {'committed': True, 'upload_id': upload_id, 'project': args['project'],
             'path': args['path'], 'sha256': sha, 'size': size, 'bytes': size,
-            'replaced': replaced, 'install': install, 'atomic': True, 'fsynced': True,
+            'mode': oct(mode), 'replaced': replaced, 'install': install, 'atomic': True,
+            'fsynced': True,
             'staging_removed': removed,
             'atomic_scope': 'The destination NAME is switched by one os.replace inside '
                             'the destination dirfd: a concurrent reader sees either the '
@@ -1118,6 +1319,8 @@ FILE_OPERATIONS = {
     'jb_mkdir': tool_mkdir, 'jb_upload_begin': tool_upload_begin,
     'jb_upload_chunk': tool_upload_chunk, 'jb_upload_commit': tool_upload_commit,
     'jb_upload_abort': tool_upload_abort,
+    'jb_chmod': tool_chmod, 'jb_copy': tool_copy, 'jb_symlink': tool_symlink,
+    'jb_readlink': tool_readlink, 'jb_log_tail': tool_log_tail,
 }
 
 
@@ -1170,13 +1373,14 @@ def invoke(name, args):
                     rt.valid_sha(args['expected_sha256'])
                     old = rt.read_at(fd, leaf)
                     if rt.sha(old) != args['expected_sha256']: raise ValueError('Concurrent modification')
+                requested = parse_mode(args['mode'], 0o000, 0o777) if 'mode' in args else None
                 if name == 'jb_write_file': data = decode(args['data_base64'])
                 else:
                     text = old.decode('utf-8')
                     if not args['old'] or text.count(args['old']) != 1: raise ValueError('Exactly one match required')
                     data = text.replace(args['old'], args['new'], 1).encode()
                 if len(data) > rt.MAX_FILE: raise ValueError('Oversized file')
-                rt.write_at(fd, leaf, data)
+                rt.write_at(fd, leaf, data, mode=requested, preserve=True)
                 return {'written': True, 'sha256': rt.sha(data), 'bytes': len(data)}
         if name in FILE_OPERATIONS: return FILE_OPERATIONS[name](args)
         if name == 'jb_stage_update':
@@ -1192,6 +1396,97 @@ def invoke(name, args):
             if not SUPERVISED: raise ValueError('Supervisor required')
             defer_exit(); return {'restart_queued': True}
     raise ValueError('Unknown tool')
+
+ERROR_TEXT = {
+    'ENOENT': 'file or directory not found',
+    'ENOTDIR': 'a path component is not a directory',
+    'EISDIR': 'path is a directory',
+    'EACCES': 'permission denied',
+    'EPERM': 'operation not permitted',
+    'EEXIST': 'destination already exists',
+    'ENOSPC': 'no space left on device',
+    'ENAMETOOLONG': 'path too long',
+    'ELOOP': 'too many symbolic links',
+    'EROFS': 'read-only filesystem',
+    'EXDEV': 'cross-device operation refused',
+    'EMFILE': 'too many open files',
+    'EFBIG': 'file too large',
+    'ENOTEMPTY': 'directory not empty',
+    'EBUSY': 'resource busy',
+    'EINVAL': 'invalid argument or unsafe state',
+    'EIO': 'input/output error',
+    'EINTERNAL': 'operation failed',
+}
+ERRNO_CODES = {
+    errno.ENOENT: 'ENOENT', errno.ENOTDIR: 'ENOTDIR', errno.EISDIR: 'EISDIR',
+    errno.EACCES: 'EACCES', errno.EPERM: 'EPERM', errno.EEXIST: 'EEXIST',
+    errno.ENOSPC: 'ENOSPC', errno.ENAMETOOLONG: 'ENAMETOOLONG', errno.ELOOP: 'ELOOP',
+    errno.EROFS: 'EROFS', errno.EXDEV: 'EXDEV', errno.EMFILE: 'EMFILE',
+    errno.EFBIG: 'EFBIG', errno.ENOTEMPTY: 'ENOTEMPTY', errno.EBUSY: 'EBUSY',
+    errno.EINVAL: 'EINVAL', errno.EIO: 'EIO',
+}
+
+def error_info(exc):
+    """Stable code plus a message that never echoes the caller's arguments.
+
+    OSError strerror text is not used (it can embed the path); internal
+    ValueError messages are fixed strings raised by the validators.
+    """
+    if isinstance(exc, FileNotFoundError): return 'ENOENT', ERROR_TEXT['ENOENT']
+    if isinstance(exc, NotADirectoryError): return 'ENOTDIR', ERROR_TEXT['ENOTDIR']
+    if isinstance(exc, IsADirectoryError): return 'EISDIR', ERROR_TEXT['EISDIR']
+    if isinstance(exc, PermissionError): return 'EACCES', ERROR_TEXT['EACCES']
+    if isinstance(exc, OSError):
+        code = ERRNO_CODES.get(exc.errno, 'EIO')
+        return code, ERROR_TEXT[code]
+    if isinstance(exc, ValueError):
+        message = str(exc).strip()[:200]
+        return 'EINVAL', message or ERROR_TEXT['EINVAL']
+    if isinstance(exc, (TypeError, KeyError)): return 'EINVAL', ERROR_TEXT['EINVAL']
+    return 'EINTERNAL', ERROR_TEXT['EINTERNAL']
+
+def log_event(event):
+    """Append one JSON line to the private rotating log; never raises.
+
+    Appending (rather than rewriting the whole file per event) keeps a failing
+    loop from turning every error into a 256 KiB write. The file is only
+    rewritten when it grows past LOG_MAX.
+    """
+    try:
+        line = (json.dumps(event, sort_keys=True) + '\n').encode()
+        with rt.state() as fd:
+            try:
+                st = os.stat(LOG_NAME, dir_fd=fd, follow_symlinks=False)
+                if (not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or
+                        st.st_uid != os.geteuid()):
+                    return
+                size = st.st_size
+            except FileNotFoundError:
+                size = 0
+            if size + len(line) > LOG_MAX:
+                try: old = rt.read_at(fd, LOG_NAME, LOG_MAX, True)
+                except (FileNotFoundError, ValueError): old = b''
+                rt.write_at(fd, LOG_NAME, (old + line)[-LOG_KEEP:])
+                return
+            handle = os.open(LOG_NAME, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                             0o600, dir_fd=fd)
+            try:
+                os.fchmod(handle, 0o600)
+                os.write(handle, line)
+            finally:
+                os.close(handle)
+    except Exception:
+        pass
+
+_last_auth_log = [0.0]
+def note_auth_failure(status):
+    # Source is loopback-only; throttle so an unauthenticated caller cannot
+    # rotate the log or wear the filesystem with failed requests.
+    now = time.monotonic()
+    if now - _last_auth_log[0] < 10: return
+    _last_auth_log[0] = now
+    log_event({'time': int(time.time()), 'tool': 'auth', 'code': 'EAUTH',
+               'detail': 'rejected HTTP %d' % status})
 
 def rpc(req):
     if not isinstance(req, dict) or req.get('jsonrpc') != '2.0':
@@ -1209,12 +1504,25 @@ def rpc(req):
     elif method == 'tools/list': result = {'tools': TOOLS}
     elif method == 'tools/call':
         name = params.get('name'); success = False
+        tool_name = name if isinstance(name, str) and name in SPEC else 'unknown-tool'
+        ref = os.urandom(6).hex()
         try:
             value = invoke(name, params.get('arguments', {}))
             result = {'content': [{'type': 'text', 'text': json.dumps(value)}], 'isError': False}; success = True
-        except Exception:
-            result = {'content': [{'type': 'text', 'text': 'Operation failed: invalid arguments, unsafe state or unavailable operation; details withheld'}], 'isError': True}
-        try: rt.audit(name if isinstance(name, str) and name in SPEC else 'unknown-tool', success)
+        except Exception as exc:
+            # The caller gets a stable code and a fixed message; the exception
+            # text (which may name a path) stays in the private 0600 log, keyed
+            # by ref, so a user can still diagnose without leaking to the model.
+            code, message = error_info(exc)
+            log_event({'time': int(time.time()), 'ref': ref, 'tool': tool_name,
+                       'code': code, 'error': type(exc).__name__,
+                       'errno': getattr(exc, 'errno', None),
+                       'detail': str(exc)[:300]})
+            result = {'content': [{'type': 'text',
+                                   'text': json.dumps({'error': {'code': code, 'message': message,
+                                                                 'ref': ref}})}],
+                      'isError': True}
+        try: rt.audit(tool_name, success)
         except Exception: pass
     else:
         return {'jsonrpc': '2.0', 'id': rid, 'error': {'code': -32601, 'message': 'Method not found'}}
@@ -1236,7 +1544,9 @@ class Server(ThreadingMixIn, HTTPServer):
     def process_request_thread(self, request, address):
         try: super().process_request_thread(request, address)
         finally: self.slots.release()
-    def handle_error(self, request, address): pass
+    def handle_error(self, request, address):
+        log_event({'time': int(time.time()), 'tool': 'http', 'code': 'EINTERNAL',
+                   'error': 'HandlerError', 'detail': 'unhandled request error'})
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
@@ -1251,12 +1561,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush(); self.close_connection = True
     def authorized(self):
         if len(self.headers.get_all('Authorization', [])) != 1:
-            self.reply(401); return False
+            note_auth_failure(401); self.reply(401); return False
         if (len(self.headers.get_all('Host', [])) != 1 or self.headers.get('Origin') is not None or
                 self.headers.get('Host') not in ('127.0.0.1:%d' % rt.PORT, 'localhost:%d' % rt.PORT)):
-            self.reply(403); return False
+            note_auth_failure(403); self.reply(403); return False
         if not hmac.compare_digest(self.headers['Authorization'].encode(), ('Bearer ' + self.server.token).encode()):
-            self.reply(401); return False
+            note_auth_failure(401); self.reply(401); return False
         return True
     def do_GET(self):
         if self.authorized(): self.reply(405 if self.path == '/mcp' else 404)
