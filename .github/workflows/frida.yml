@@ -1,0 +1,55 @@
+name: frida-ondevice
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'frida/**'
+      - '.github/workflows/frida.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Fetch Frida core devkit
+        run: |
+          curl -L --fail --max-time 300 \
+            -o "$RUNNER_TEMP/frida-core.tar.xz" \
+            https://github.com/frida/frida/releases/download/17.17.0/frida-core-devkit-17.17.0-ios-arm64e.tar.xz
+          mkdir -p "$RUNNER_TEMP/frida-core"
+          tar -xf "$RUNNER_TEMP/frida-core.tar.xz" -C "$RUNNER_TEMP/frida-core"
+
+      - name: Build the on-device client
+        run: |
+          set -euo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          CORE="$RUNNER_TEMP/frida-core"
+          xcrun --sdk iphoneos clang \
+            -target arm64e-apple-ios16.0 -isysroot "$SDK" \
+            -I"$CORE" -O2 -Wall -c frida/frida-cli.c -o "$RUNNER_TEMP/frida-cli.o"
+          xcrun --sdk iphoneos clang \
+            -target arm64e-apple-ios16.0 -isysroot "$SDK" \
+            -Wl,-fixup_chains \
+            -o "$RUNNER_TEMP/frida-cli" "$RUNNER_TEMP/frida-cli.o" \
+            -L"$CORE" -lfrida-core -lbsm -ldl -lm -lresolv \
+            -framework Foundation -framework CoreFoundation \
+            -framework CoreGraphics -framework UIKit
+          codesign --force --sign - "$RUNNER_TEMP/frida-cli"
+          ls -lh "$RUNNER_TEMP/frida-cli"
+          otool -hv "$RUNNER_TEMP/frida-cli" | tail -3
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frida-cli
+          path: ${{ runner.temp }}/frida-cli
