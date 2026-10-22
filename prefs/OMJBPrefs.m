@@ -18,6 +18,18 @@ static NSString * const OMJBTokenRelative =
     @"Documents/OpenMinis-Jailbreak/.bridge-state/token";
 static NSString * const OMJBMCPURL = @"http://127.0.0.1:18765/mcp";
 
+static void OMJBTrace(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *line = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"prefs-trace.log"];
+    if (path.length) {
+        FILE *file = fopen([path fileSystemRepresentation], "a");
+        if (file) { fprintf(file, "%s\n", [line UTF8String]); fclose(file); }
+    }
+}
+
 #pragma mark - Token discovery
 
 // Settings sees the SYSTEM data volume at /var/mobile, while the bridge lives in
