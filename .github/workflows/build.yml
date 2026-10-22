@@ -70,14 +70,15 @@ jobs:
   tests-python39:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    container: python:3.9-slim-bullseye
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
       - name: Toolchain
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends dpkg
           python3 -V
+          dpkg-deb --version | head -1
       - name: Build
         run: python3 build.py
       - name: Tests on the device runtime
