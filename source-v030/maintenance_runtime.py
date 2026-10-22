@@ -98,15 +98,32 @@ def read_at(fd, name, limit=MAX_FILE, private=False):
         return data
     finally: os.close(f)
 
-def write_at(fd, name, data):
+def write_at(fd, name, data, mode=None, preserve=False):
+    """Atomic replace; keep the destination's mode when asked.
+
+    State files are always 0600 because callers leave `mode` unset and
+    `preserve` False. Project writes pass preserve=True so editing a 0755
+    script does not silently turn it into 0600; an explicit `mode` wins.
+    """
+    existing = None
     try:
         st = os.stat(name, dir_fd=fd, follow_symlinks=False)
         if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_uid != os.geteuid():
             raise ValueError('Unsafe destination')
+        existing = stat.S_IMODE(st.st_mode) & 0o777
     except FileNotFoundError: pass
+    if mode is not None:
+        if type(mode) is not int or mode < 0 or mode & ~0o777:
+            raise ValueError('Invalid mode')
+    elif preserve and existing is not None:
+        mode = existing
+    else:
+        mode = 0o600
     temp = '.v030-' + secrets.token_hex(12)
     f = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
     try:
+        # os.open() is filtered by umask, so pin the exact mode on the descriptor.
+        os.fchmod(f, mode)
         with os.fdopen(f, 'wb') as stream:
             stream.write(data); stream.flush(); os.fsync(stream.fileno())
         os.replace(temp, name, src_dir_fd=fd, dst_dir_fd=fd)

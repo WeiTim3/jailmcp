@@ -25,7 +25,7 @@ Minis 只是受支持的 MCP 客户端之一，不是项目归属。任何能访
 | MCP 工具 | 37 个，包含原生 `jb_frida_*` |
 | MCP 地址 | `http://127.0.0.1:18765/mcp` |
 
-0.4.0 只改品牌，包名、launchd、状态目录和工具名都不动，保证现有安装继续升级、token 不丢。新的 `dev.jailmcp.bridge` 包在 0.5.0 落地。
+0.4.0 只改品牌，包名、launchd、状态目录和工具名都不动，保证现有安装继续升级、token 不丢。0.5.0 启用 `dev.jailmcp.bridge`；运行路径和 `.bridge-state` 再保留一个版本。
 
 ## 命名
 
@@ -75,10 +75,12 @@ spawn 需要设备解锁。Frida server 是 root 服务，只监听 `127.0.0.1:2
        包名 / 路径 / 工具名不变
 
 0.5.0  dev.jailmcp.bridge + dev.jailmcp.frida-cli
-       .jailmcp 状态目录
-       从旧包和旧路径迁移
+       包名迁移；运行路径/状态目录暂不变
 
-1.0.0  移除旧包名
+0.6.0  .jailmcp 状态目录与 /usr/local/lib/jailmcp
+       token/config 迁移
+
+1.0.0  移除旧包和旧路径
        jb_* 工具名永久保留
 ```
 

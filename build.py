@@ -4,10 +4,10 @@ import ast, hashlib, json, os, shutil, subprocess
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
 SOURCE=HERE/'source-v030'
-STAGE=Path('/tmp/openminis-jb-package-build-root')
+STAGE=Path('/tmp/jailmcp-package-build-root')
 import package_lifecycle as lifecycle
 VERSION=lifecycle.VERSION
-OUT=HERE/('OpenMinis-Jailbreak_'+VERSION+'_iphoneos-arm64e.deb')
+OUT=HERE/('JailMCP_'+VERSION+'_iphoneos-arm64e.deb')
 EPOCH='1760000000'
 
 def build():
@@ -18,8 +18,8 @@ def build():
         src=HERE/name if name=='mobile_setup.py' else SOURCE/name
         data=src.read_bytes(); ast.parse(data,feature_version=(3,9)); hashes[name]=hashlib.sha256(data).hexdigest(); (runtime/name).write_bytes(data)
     control=STAGE/'DEBIAN'; control.mkdir()
-    (control/'control').write_text(f'''Package: app.openminis.jailbreak
-Name: OpenMinis-Jailbreak
+    (control/'control').write_text(f'''Package: dev.jailmcp.bridge
+Name: JailMCP
 Version: {VERSION}
 Architecture: iphoneos-arm64e
 Maintainer: OpenMinis Local Build <local@localhost>
@@ -27,8 +27,10 @@ Section: System
 Priority: optional
 Pre-Depends: python3 (>= 3.9.9-2), python3.9 (>= 3.9.9-2), roothide (>= 0.1.0), launchctl (>= 1:1.2.0)
 Depends: libpython3.9 (>= 3.9.9-2)
-Description: OpenMinis-Jailbreak local API3 mobile service (experimental)
- Canonical OpenMinis-Jailbreak service with in-place upgrades: Sileo can update
+Conflicts: app.openminis.jailbreak
+Replaces: app.openminis.jailbreak
+Description: JailMCP local API3 mobile service for jailbroken iOS (experimental)
+ Client-neutral MCP bridge for jailbroken iOS with in-place upgrades: Sileo can update
  this package without uninstalling, and the token, config and audit survive.
  No project alias; no data migration.
 ''')
@@ -51,7 +53,7 @@ Description: OpenMinis-Jailbreak local API3 mobile service (experimental)
             text = text.replace('#!/bin/sh\n', '#!/bin/sh\nif [ ! -x /usr/bin/python3 ]; then\n echo "WARNING: Python unavailable; residues preserved for manual cleanup" >&2\n exit 0\nfi\n', 1)
             text += 'rc=$?\nif [ "$rc" -ne 0 ]; then echo "WARNING: optional cleanup incomplete; residues preserved" >&2; fi\nexit 0\n'
         (control/phase).write_text(text); (control/phase).chmod(0o755)
-    docs=STAGE/'usr/share/doc/app.openminis.jailbreak'; docs.mkdir(parents=True); (docs/'README.zh-CN.md').write_text((HERE/'README.zh-CN.md').read_text()); (docs/'source-hashes.json').write_text(json.dumps(hashes,sort_keys=True,indent=2)+'\n')
+    docs=STAGE/'usr/share/doc/dev.jailmcp.bridge'; docs.mkdir(parents=True); (docs/'README.zh-CN.md').write_text((HERE/'README.zh-CN.md').read_text()); (docs/'source-hashes.json').write_text(json.dumps(hashes,sort_keys=True,indent=2)+'\n')
     md5=[]
     for p in sorted(STAGE.rglob('*')):
         if p.is_dir(): p.chmod(0o755)

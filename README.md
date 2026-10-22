@@ -25,13 +25,13 @@ The project is in a staged rename from **OpenMinis-Jailbreak** to **JailMCP**.
 | Brand / repository | JailMCP / `jailmcp` |
 | Current runtime package | `0.3.13-2+experimental` |
 | Bridge version | `0.3.11` |
-| Package ID | still `app.openminis.jailbreak` |
+| Package ID | `app.openminis.jailbreak` (0.5.0 moves to `dev.jailmcp.bridge`) |
 | MCP tools | 37, including native `jb_frida_*` |
 | MCP endpoint | `http://127.0.0.1:18765/mcp` |
 
 The package ID, launchd label, state directory and tool names are intentionally
 unchanged in 0.4.0 so existing installs keep upgrading and keep their token.
-The new `dev.jailmcp.bridge` package lands in 0.5.0.
+0.5.0 introduces `dev.jailmcp.bridge`; runtime paths and `.bridge-state` stay for one more release.
 
 ## Naming
 
@@ -85,10 +85,12 @@ bound to `127.0.0.1:27042`; the client runs as `mobile`.
        package IDs / paths / tools unchanged
 
 0.5.0  dev.jailmcp.bridge + dev.jailmcp.frida-cli
-       .jailmcp state directory
-       migration from old package and paths
+       package IDs move; runtime paths/state stay for compatibility
 
-1.0.0  remove the legacy package name
+0.6.0  .jailmcp state directory and /usr/local/lib/jailmcp
+       token/config migration
+
+1.0.0  remove legacy package and paths
        jb_* tool names remain permanent
 ```
 
