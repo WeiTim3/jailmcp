@@ -15,7 +15,7 @@
    返回 `{"error":{"code","message","ref"}}`；异常写入私有 `log-v030.jsonl`；
    新增 `jb_log_tail`；认证失败按 10 秒节流记录。
 4. **发布链滞后** — 部分修。
-   唯一 tag/Release 仍是 `v0.3.8-1`，当前代码是 `0.3.14-18`；
+   唯一 tag/Release 仍是 `v0.3.8-1`，当前代码是 `0.3.14-19`；
    Release 只有 `.deb`，没有 `SHA256SUMS` 与源码包；release job 重建而不是复用测试产物。
    CI 已改为上传/复用同一份产物并附带校验和；**仍需人工打 tag 并发布**。
 5. **CI 漏跑 `test_filetools.py` 与 `test_upgrade.py`，且未在 Python 3.9 验证** — **已修**：

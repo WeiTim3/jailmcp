@@ -34,10 +34,7 @@ jobs:
           ENTRY=layout/Library/PreferenceLoader/Preferences/OpenMinisJBPrefs.plist
           mkdir -p "$BUNDLE" "$(dirname "$ENTRY")"
 
-          PREFS=""
-          if [ -e "$SDK/System/Library/PrivateFrameworks/Preferences.framework/Preferences.tbd" ]; then
-            PREFS="-F$SDK/System/Library/PrivateFrameworks -framework Preferences"
-          fi
+          PREFS="-Fprefs/stubs -framework Preferences -Lprefs/stubs -lroothide"
           for ARCH in arm64 arm64e; do
             if [ "$ARCH" = arm64 ]; then TARGET=arm64-apple-ios16.0; else TARGET=arm64e-apple-ios16.0; fi
             xcrun --sdk iphoneos clang -target "$TARGET" -isysroot "$SDK" \

@@ -1,0 +1,8 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ arm64-ios, arm64e-ios ]
+install-name: '@loader_path/.jbroot/usr/lib/libroothide.dylib'
+current-version: 1
+compatibility-version: 1
+exports: []
+...
