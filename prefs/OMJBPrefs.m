@@ -782,11 +782,7 @@ static void OMJBRootViewWillAppear(id self, SEL _cmd, BOOL animated) {
     OMJBRefresh(self);
 }
 
-static void OMJBRegisterClasses(void);
-__attribute__((used, section("__DATA,__mod_init_func")))
-static void (*const OMJBRegisterClassesInit)(void) = OMJBRegisterClasses;
-
-static void OMJBRegisterClasses(void) {
+__attribute__((constructor)) static void OMJBRegisterClasses(void) {
     OMJBTrace(@"constructor: PSListController=%@ PSSpecifier=%@",
               objc_getClass("PSListController"), objc_getClass("PSSpecifier"));
     static const OMJBMethod rootMethods[] = {
