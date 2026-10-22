@@ -9,6 +9,7 @@
  *   frida run -p PID -l script.js
  *   frida run -n ProcessName -l script.js
  *   frida run -n ProcessName -e 'console.log("hi")'
+ *   frida run -f com.apple.Preferences -e 'console.log("hi")'
  */
 #include "frida-core.h"
 
@@ -136,21 +137,38 @@ find_pid (FridaDevice *device, const gchar *name)
 
 static int
 cmd_run (FridaDeviceManager *manager, const gchar *address,
-         guint pid, const gchar *process_name, const gchar *script_path,
-         const gchar *inline_script)
+         guint pid, const gchar *process_name, const gchar *spawn_id,
+         const gchar *script_path, const gchar *inline_script)
 {
   GError *error = NULL;
   FridaDevice *device = open_device (manager, address);
   if (device == NULL)
     return 1;
 
-  if (pid == 0 && process_name != NULL)
-    pid = find_pid (device, process_name);
-  if (pid == 0)
+  gboolean spawned = FALSE;
+  if (spawn_id != NULL)
     {
-      g_printerr ("process not found\n");
-      g_object_unref (device);
-      return 1;
+      pid = frida_device_spawn_sync (device, spawn_id, NULL, NULL, &error);
+      if (pid == 0)
+        {
+          g_printerr ("cannot spawn %s: %s\n", spawn_id,
+                      error != NULL ? error->message : "unknown error");
+          if (error != NULL) g_error_free (error);
+          g_object_unref (device);
+          return 1;
+        }
+      spawned = TRUE;
+    }
+  else
+    {
+      if (pid == 0 && process_name != NULL)
+        pid = find_pid (device, process_name);
+      if (pid == 0)
+        {
+          g_printerr ("process not found\n");
+          g_object_unref (device);
+          return 1;
+        }
     }
 
   gchar *source = NULL;
@@ -217,6 +235,16 @@ cmd_run (FridaDeviceManager *manager, const gchar *address,
       return 1;
     }
 
+  if (spawned)
+    {
+      frida_device_resume_sync (device, pid, NULL, &error);
+      if (error != NULL)
+        {
+          g_printerr ("cannot resume %u: %s\n", pid, error->message);
+          g_error_free (error);
+        }
+    }
+
   g_print ("[*] attached %u, script loaded; Ctrl-C to stop\n", pid);
   fflush (stdout);
 
@@ -240,7 +268,7 @@ cmd_run (FridaDeviceManager *manager, const gchar *address,
 static void
 usage (const char *argv0)
 {
-  g_printerr ("usage:\n  %s ps\n  %s run -p PID -l script.js\n  %s run -n NAME -l script.js\n  %s run -n NAME -e 'code'\n",
+  g_printerr ("usage:\n  %s ps\n  %s run -p PID -l script.js\n  %s run -n NAME -l script.js\n  %s run -f BUNDLE_ID -e 'code'\n",
               argv0, argv0, argv0, argv0);
 }
 
@@ -256,6 +284,7 @@ main (int argc, char *argv[])
   gchar *address = g_strdup ("127.0.0.1:27042");
   guint pid = 0;
   gchar *name = NULL;
+  gchar *spawn_id = NULL;
   gchar *script = NULL;
   gchar *inline_script = NULL;
   gchar *command = g_strdup (argv[1]);
@@ -271,6 +300,8 @@ main (int argc, char *argv[])
         pid = (guint) g_ascii_strtoull (argv[++i], NULL, 10);
       else if (g_strcmp0 (argv[i], "-n") == 0 && i + 1 < argc)
         name = g_strdup (argv[++i]);
+      else if (g_strcmp0 (argv[i], "-f") == 0 && i + 1 < argc)
+        spawn_id = g_strdup (argv[++i]);
       else if (g_strcmp0 (argv[i], "-l") == 0 && i + 1 < argc)
         script = g_strdup (argv[++i]);
       else if (g_strcmp0 (argv[i], "-e") == 0 && i + 1 < argc)
@@ -290,7 +321,7 @@ main (int argc, char *argv[])
   if (g_strcmp0 (command, "ps") == 0)
     rc = cmd_ps (manager, address);
   else if (g_strcmp0 (command, "run") == 0 && (script != NULL || inline_script != NULL))
-    rc = cmd_run (manager, address, pid, name, script, inline_script);
+    rc = cmd_run (manager, address, pid, name, spawn_id, script, inline_script);
   else
     usage (argv[0]);
 
@@ -300,6 +331,7 @@ main (int argc, char *argv[])
   g_free (command);
   g_free (address);
   g_free (name);
+  g_free (spawn_id);
   g_free (script);
   g_free (inline_script);
   return rc;
