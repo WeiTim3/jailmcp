@@ -1,4 +1,4 @@
-# OpenMinis-Jailbreak 0.3.14-13+experimental
+# OpenMinis-Jailbreak 0.3.14-14+experimental
 
 以 launchd 服务形式运行、通过本机 MCP 向 OpenMinis 提供越狱侧能力的服务包。
 OpenMinis 本体不需要越狱权限、不需要注入、不需要改签名。

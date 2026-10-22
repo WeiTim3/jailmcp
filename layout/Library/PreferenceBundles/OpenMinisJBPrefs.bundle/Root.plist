@@ -71,13 +71,12 @@
             <key>cell</key><string>PSButtonCell</string>
             <key>label</key><string>回退上一版</string>
             <key>action</key><string>rollback</string>
-            <key>isDestructive</key><true/>
         </dict>
 
         <dict>
             <key>cell</key><string>PSGroupCell</string>
             <key>label</key><string>能力</string>
-            <key>footerText</key><string>Shell 与整机读取都以 mobile 身份运行，不是沙箱。</string>
+            <key>footerText</key><string>Shell 与整机读取都以 mobile 身份运行，不是沙箱。关闭后 jb_exec 会拒绝执行。</string>
         </dict>
         <dict>
             <key>cell</key><string>PSSwitchCell</string>
@@ -94,20 +93,14 @@
         </dict>
         <dict>
             <key>cell</key><string>PSButtonCell</string>
-            <key>label</key><string>添加项目根…</string>
-            <key>action</key><string>addProject</string>
-        </dict>
-        <dict>
-            <key>cell</key><string>PSButtonCell</string>
-            <key>label</key><string>移除项目根…</string>
-            <key>action</key><string>removeProject</string>
-            <key>isDestructive</key><true/>
+            <key>label</key><string>管理项目根…</string>
+            <key>action</key><string>manageProjects</string>
         </dict>
 
         <dict>
             <key>cell</key><string>PSGroupCell</string>
             <key>label</key><string>连接</string>
-            <key>footerText</key><string>token 位于 .bridge-state/token（0600）。复制后等同 mobile 权限。</string>
+            <key>footerText</key><string>token 位于 .bridge-state/token（0600）。复制的 token 等同 mobile 权限，请勿分享。</string>
         </dict>
         <dict>
             <key>cell</key><string>PSTitleValueCell</string>
