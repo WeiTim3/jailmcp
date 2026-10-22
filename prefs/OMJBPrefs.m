@@ -18,11 +18,25 @@
 #import <unistd.h>
 #import <string.h>
 #import <stdlib.h>
+#import <stdio.h>
+#import <stdarg.h>
 
 static NSString * const OMJBTokenRelative =
     @"Documents/OpenMinis-Jailbreak/.bridge-state/token";
 static NSString * const OMJBMCPURL = @"http://127.0.0.1:18765/mcp";
 static const char kOMJBTextViewKey;
+
+static void OMJBTrace(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *line = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+    FILE *file = fopen("/var/mobile/Documents/OpenMinis-Jailbreak/prefs-trace.log", "a");
+    if (file) {
+        fprintf(file, "%s\n", [line UTF8String]);
+        fclose(file);
+    }
+}
 
 static NSDictionary *gDevice = nil;
 static NSDictionary *gInfo = nil;
@@ -324,9 +338,16 @@ static void OMJBConfirm(id host, NSString *title, NSString *message,
 }
 
 static void OMJBReload(id host) {
-    NSMutableArray *items = [OMJBBuildSpecifiers(host) mutableCopy];
-    [(PSListController *)host setSpecifiers:items];
-    [(PSListController *)host reloadSpecifiers];
+    PSListController *controller = (PSListController *)host;
+    [controller reloadSpecifiers];
+    NSUInteger count = [[controller specifiers] count];
+    OMJBTrace(@"reload: plist rows=%lu", (unsigned long)count);
+    if (count == 0) {
+        [controller setSpecifiers:[OMJBBuildSpecifiers(host) mutableCopy]];
+        [controller reloadSpecifiers];
+        OMJBTrace(@"reload: fallback rows=%lu",
+                  (unsigned long)[[controller specifiers] count]);
+    }
 }
 
 static void OMJBRefresh(id host) {
@@ -485,6 +506,27 @@ static id OMJBURLValue(id self, SEL _cmd) { return OMJBMCPURL; }
 
 static id OMJBShellValue(id self, SEL _cmd) {
     return @(OMJBBool(gConfig[@"allow_mobile_shell"]));
+}
+
+static id OMJBStatusValue(id self, SEL _cmd, PSSpecifier *spec) {
+    NSString *key = [spec propertyForKey:@"id"];
+    OMJBTrace(@"statusValue: %@", key);
+    if ([key isEqualToString:@"health"]) return OMJBHealthValue(self, _cmd);
+    if ([key isEqualToString:@"version"]) return OMJBVersionValue(self, _cmd);
+    if ([key isEqualToString:@"api"]) return OMJBApiValue(self, _cmd);
+    if ([key isEqualToString:@"pid"]) return OMJBPidValue(self, _cmd);
+    if ([key isEqualToString:@"supervisor"]) return OMJBSupervisorValue(self, _cmd);
+    if ([key isEqualToString:@"rollback"]) return OMJBRollbackValue(self, _cmd);
+    if ([key isEqualToString:@"source"]) return OMJBSourceValue(self, _cmd);
+    if ([key isEqualToString:@"error"]) return OMJBErrorValue(self, _cmd);
+    if ([key isEqualToString:@"projects"]) return OMJBProjectsValue(self, _cmd);
+    if ([key isEqualToString:@"url"]) return OMJBURLValue(self, _cmd);
+    return @"—";
+}
+
+static id OMJBShellValueSpec(id self, SEL _cmd, PSSpecifier *spec) {
+    (void)spec;
+    return OMJBShellValue(self, _cmd);
 }
 
 #pragma mark - Actions
@@ -728,7 +770,8 @@ static void OMJBRootViewDidLoad(id self, SEL _cmd) {
                                                       target:self
                                                       action:sel_registerName("refresh:")];
     [[(PSListController *)self navigationItem] setRightBarButtonItem:refresh];
-    OMJBReload(self);
+    OMJBTrace(@"viewDidLoad");
+    OMJBRefresh(self);
 }
 
 static void OMJBRootViewWillAppear(id self, SEL _cmd, BOOL animated) {
@@ -737,14 +780,13 @@ static void OMJBRootViewWillAppear(id self, SEL _cmd, BOOL animated) {
     OMJBRefresh(self);
 }
 
-static id OMJBRootSpecifiers(id self, SEL _cmd) { return OMJBBuildSpecifiers(self); }
-
 __attribute__((constructor)) static void OMJBRegisterClasses(void) {
+    OMJBTrace(@"constructor: PSListController=%@ PSSpecifier=%@",
+              objc_getClass("PSListController"), objc_getClass("PSSpecifier"));
     static const OMJBMethod rootMethods[] = {
         { "init", (IMP)OMJBRootInit, "@@:" },
         { "viewDidLoad", (IMP)OMJBRootViewDidLoad, "v@:" },
         { "viewWillAppear:", (IMP)OMJBRootViewWillAppear, "v@:B" },
-        { "specifiers", (IMP)OMJBRootSpecifiers, "@@:" },
         { "refresh:", (IMP)OMJBRootRefresh, "v@:@" },
         { "restart", (IMP)OMJBRestartAction, "v@:" },
         { "rollback", (IMP)OMJBRollbackAction, "v@:" },
@@ -755,6 +797,8 @@ __attribute__((constructor)) static void OMJBRegisterClasses(void) {
         { "showLog", (IMP)OMJBShowLogAction, "v@:" },
         { "setShell:forSpecifier:", (IMP)OMJBSetShellAction, "v@:@@" },
         { "shellValue", (IMP)OMJBShellValue, "@@:" },
+        { "shellValue:", (IMP)OMJBShellValueSpec, "@@:@" },
+        { "statusValue:", (IMP)OMJBStatusValue, "@@:@" },
         { "healthValue", (IMP)OMJBHealthValue, "@@:" },
         { "versionValue", (IMP)OMJBVersionValue, "@@:" },
         { "apiValue", (IMP)OMJBApiValue, "@@:" },
