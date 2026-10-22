@@ -42,6 +42,7 @@ jobs:
           xcrun --sdk iphoneos clang \
             -target arm64e-apple-ios16.0 -isysroot "$SDK" \
             -bundle -Wl,-fixup_chains -Wl,-undefined,dynamic_lookup \
+            -Wl,-no_dead_strip_inits_and_terms \
             -framework Foundation -framework UIKit \
             -o "$BUNDLE/OpenMinisJBPrefs" "$RUNNER_TEMP/OMJBPrefs.o"
 

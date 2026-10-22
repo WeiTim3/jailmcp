@@ -31,7 +31,9 @@ static void OMJBTrace(NSString *format, ...) {
     va_start(args, format);
     NSString *line = [[NSString alloc] initWithFormat:format arguments:args];
     va_end(args);
-    FILE *file = fopen("/var/mobile/Documents/OpenMinis-Jailbreak/prefs-trace.log", "a");
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"prefs-trace.log"];
+    if (path.length == 0) return;
+    FILE *file = fopen([path fileSystemRepresentation], "a");
     if (file) {
         fprintf(file, "%s\n", [line UTF8String]);
         fclose(file);
@@ -780,7 +782,11 @@ static void OMJBRootViewWillAppear(id self, SEL _cmd, BOOL animated) {
     OMJBRefresh(self);
 }
 
-__attribute__((constructor)) static void OMJBRegisterClasses(void) {
+static void OMJBRegisterClasses(void);
+__attribute__((used, section("__DATA,__mod_init_func")))
+static void (*const OMJBRegisterClassesInit)(void) = OMJBRegisterClasses;
+
+static void OMJBRegisterClasses(void) {
     OMJBTrace(@"constructor: PSListController=%@ PSSpecifier=%@",
               objc_getClass("PSListController"), objc_getClass("PSSpecifier"));
     static const OMJBMethod rootMethods[] = {
