@@ -19,6 +19,9 @@ def build():
         data=src.read_bytes(); ast.parse(data,feature_version=(3,9)); hashes[name]=hashlib.sha256(data).hexdigest(); (runtime/name).write_bytes(data)
     layout=HERE/'layout'
     if layout.is_dir(): shutil.copytree(layout, STAGE, dirs_exist_ok=True)
+    # PreferenceLoader bundles on iOS use ldid, not an Xcode CodeResources
+    # directory. A stale _CodeSignature makes Preferences reject the bundle.
+    shutil.rmtree(STAGE/'Library/PreferenceBundles/OpenMinisJBPrefs.bundle/_CodeSignature', ignore_errors=True)
     control=STAGE/'DEBIAN'; control.mkdir()
     (control/'control').write_text(f'''Package: app.openminis.jailbreak
 Name: OpenMinis-Jailbreak

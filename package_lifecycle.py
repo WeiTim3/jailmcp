@@ -6,6 +6,7 @@ from pathlib import Path
 import plistlib
 import pwd
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -23,7 +24,7 @@ PREVIOUS = Path('/usr/local/lib/openminis-jb-previous')
 PREV_SCHEMA = 'openminis-jb-previous-1'
 PREV_EXEC = '/usr/local/bin/openminis-jb-restore-runtime'
 RECEIPT = STORE / '.clean-install-v032'
-VERSION = '0.3.14-16+experimental'
+VERSION = '0.3.14-17+experimental'
 RECEIPT_DATA = ('OpenMinis-Jailbreak clean-install ' + VERSION + '\n').encode()
 RECEIPT_PREFIX = b'OpenMinis-Jailbreak clean-install '
 SCHEMA = 'openminis-jb-upgrade-1'
@@ -1353,6 +1354,8 @@ def sign_prefs_bundle():
 def postinst_configure():
     # CI builds the static class metadata with Xcode; ldid only replaces the
     # signature shell (it does not touch the PAC-authenticated class list).
+    shutil.rmtree('/Library/PreferenceBundles/OpenMinisJBPrefs.bundle/_CodeSignature',
+                  ignore_errors=True)
     try: sign_prefs_bundle()
     except Exception:
         print('WARNING: Settings bundle signing skipped; keeping the build signature',

@@ -52,6 +52,7 @@ jobs:
           cp prefs/Resources/icon.png "$BUNDLE/icon.png"
           cp prefs/Resources/OpenMinisJBPrefs.plist "$ENTRY"
           chmod 0755 "$BUNDLE/OpenMinisJBPrefs"
+          rm -rf "$BUNDLE/_CodeSignature"
 
       - name: Verify the Mach-O
         run: |
