@@ -25,7 +25,7 @@ def setup(validate=False):
     try:
         os.mkdir(BASE.name, mode=0o700, dir_fd=parent)
         project = os.open(BASE.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
-        try: os.mkdir('.bridge-state', mode=0o700, dir_fd=project)
+        try: os.mkdir('.jailmcp', mode=0o700, dir_fd=project)
         finally: os.close(project)
     finally: os.close(parent)
     with rt.state() as fd:

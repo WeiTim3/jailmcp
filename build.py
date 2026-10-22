@@ -12,7 +12,7 @@ EPOCH='1760000000'
 
 def build():
     if STAGE.exists(): shutil.rmtree(STAGE)
-    runtime=STAGE/'usr/local/lib/openminis-jb'; runtime.mkdir(parents=True)
+    runtime=STAGE/'usr/local/lib/jailmcp'; runtime.mkdir(parents=True)
     hashes={}
     for name in ('launcher.py','maintenance_runtime.py','bridge.py','mobile_setup.py'):
         src=HERE/name if name=='mobile_setup.py' else SOURCE/name
@@ -27,7 +27,7 @@ Section: System
 Priority: optional
 Pre-Depends: python3 (>= 3.9.9-2), python3.9 (>= 3.9.9-2), roothide (>= 0.1.0), launchctl (>= 1:1.2.0)
 Depends: libpython3.9 (>= 3.9.9-2)
-Conflicts: app.openminis.jailbreak
+Conflicts: app.openminis.jailbreak, dev.jailmcp.bridge (<< 0.6.0)
 Replaces: app.openminis.jailbreak
 Description: JailMCP local API3 mobile service for jailbroken iOS (experimental)
  Client-neutral MCP bridge for jailbroken iOS with in-place upgrades: Sileo can update
@@ -44,7 +44,7 @@ Description: JailMCP local API3 mobile service for jailbroken iOS (experimental)
     helper=('#!/usr/bin/python3\n'+life.split(MARKER)[0]+
         "if __name__ == '__main__':\n    sys.exit(restore_main(sys.argv[1:]))\n")
     ast.parse(helper,feature_version=(3,9))
-    binary=STAGE/'usr/local/bin/openminis-jb-restore-runtime'
+    binary=STAGE/'usr/local/bin/jailmcp-restore-runtime'
     binary.parent.mkdir(parents=True); binary.write_text(helper)
     for phase in ('preinst','postinst','prerm','postrm'):
         text="#!/bin/sh\nexec /usr/bin/python3 -I -B - "+phase+" \"$@\" <<'OPENMINIS_PACKAGE_PY'\n"+life+"\nOPENMINIS_PACKAGE_PY\n"

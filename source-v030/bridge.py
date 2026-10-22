@@ -193,7 +193,7 @@ def enqueue(target):
 # 0.3.5 adds jb_mkdir and the staged-upload quartet (jb_upload_begin,
 # jb_upload_chunk, jb_upload_commit, jb_upload_abort). Staging lives in
 # <state>/uploads-v030, which the traversal above can never reach.
-PRIVATE = '.bridge-state'        # the component name rt.target already refuses
+PRIVATE = '.jailmcp'        # the component name rt.target already refuses
 UPLOAD_DIR = 'uploads-v030'      # staging area, INSIDE the private state dir
 UPLOAD_ID_BYTES = 16             # upload ids are 32 hex characters
 MAX_UPLOADS = 4                  # concurrent staged uploads

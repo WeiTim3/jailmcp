@@ -13,8 +13,8 @@ import tempfile
 import threading
 import time
 
-STATE = Path('/var/mobile/Documents/OpenMinis-Jailbreak/.bridge-state')
-STORE = Path('/usr/local/lib/openminis-jb')
+STATE = Path('/var/mobile/Documents/OpenMinis-Jailbreak/.jailmcp')
+STORE = Path('/usr/local/lib/jailmcp')
 PORT = 18765
 MAX_FILE = 131072
 LOCK = threading.RLock()
@@ -209,7 +209,7 @@ def project_fd(project):
 @contextlib.contextmanager
 def target(project, path):
     if (not isinstance(path, str) or not path or path.startswith('/') or
-            '\x00' in path or any(x in ('', '.', '..', '.bridge-state') for x in path.split('/'))):
+            '\x00' in path or any(x in ('', '.', '..', '.jailmcp') for x in path.split('/'))):
         raise ValueError('Invalid relative path')
     parts = path.split('/')
     fd = project_fd(project)

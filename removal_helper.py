@@ -80,8 +80,8 @@ def stopped():
             if not exists(fd, BASE): return
             project = directory(BASE, fd)
             try:
-                if not exists(project, '.bridge-state'): return
-                state = directory('.bridge-state', project)
+                if not exists(project, '.jailmcp'): return
+                state = directory('.jailmcp', project)
                 try:
                     try: lock = os.open('supervisor-v030.lock', os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=state)
                     except FileNotFoundError: return
@@ -118,7 +118,7 @@ def cleanup():
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != 501:
                 print('WARNING: conflicting canonical path preserved'); return
             project = directory(BASE, fd)
-            try: erase(project, '.bridge-state')
+            try: erase(project, '.jailmcp')
             finally: os.close(project)
             try: os.rmdir(BASE, dir_fd=fd)
             except OSError: print('NOTICE: ordinary project files preserved')

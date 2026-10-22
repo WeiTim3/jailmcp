@@ -12,21 +12,21 @@ import sys
 import tempfile
 import time
 
-LABEL = 'app.openminis.jbbridge'
-STORE = Path('/usr/local/lib/openminis-jb')
-TRANSACTION = Path('/usr/local/lib/openminis-jb-transaction')
+LABEL = 'dev.jailmcp.bridge'
+STORE = Path('/usr/local/lib/jailmcp')
+TRANSACTION = Path('/usr/local/lib/jailmcp-transaction')
 # Retained previous known-good root runtime (0.3.7). Deliberately a different
 # path from TRANSACTION: this area is only ever written after a *successful*
 # activation and is never read, written or removed by the in-flight transaction
 # logic (and the recovery helper never touches TRANSACTION).
-PREVIOUS = Path('/usr/local/lib/openminis-jb-previous')
-PREV_SCHEMA = 'openminis-jb-previous-1'
-PREV_EXEC = '/usr/local/bin/openminis-jb-restore-runtime'
+PREVIOUS = Path('/usr/local/lib/jailmcp-previous')
+PREV_SCHEMA = 'jailmcp-previous-1'
+PREV_EXEC = '/usr/local/bin/jailmcp-restore-runtime'
 RECEIPT = STORE / '.clean-install-v032'
-VERSION = '0.5.0+experimental'
-RECEIPT_DATA = ('OpenMinis-Jailbreak clean-install ' + VERSION + '\n').encode()
-RECEIPT_PREFIX = b'OpenMinis-Jailbreak clean-install '
-SCHEMA = 'openminis-jb-upgrade-1'
+VERSION = '0.6.0+experimental'
+RECEIPT_DATA = ('JailMCP clean-install ' + VERSION + '\n').encode()
+RECEIPT_PREFIX = b'JailMCP clean-install '
+SCHEMA = 'jailmcp-upgrade-1'
 STAGE = 'dispatch'
 REPORTED = False
 HELPER_TAGS = ('identity', 'documents-anchor', 'project-conflict', 'socket', 'fresh-complete', 'stopped', 'cleanup')
@@ -40,7 +40,7 @@ def stage(name):
     global STAGE
     STAGE = name
 DEST = Path('/Library/LaunchDaemons') / (LABEL + '.plist')
-BOOT = "import sys,runpy; sys.path.insert(0,'/usr/local/lib/openminis-jb'); runpy.run_path('/usr/local/lib/openminis-jb/launcher.py',run_name='__main__')"
+BOOT = "import sys,runpy; sys.path.insert(0,'/usr/local/lib/jailmcp'); runpy.run_path('/usr/local/lib/jailmcp/launcher.py',run_name='__main__')"
 HASHES = {}  # Filled by reproducible builder.
 # Explicit allowlist of known-good *installed* root runtimes. All four files must
 # match one listed set exactly; the packaged set of this release is appended at
@@ -100,7 +100,7 @@ KNOWN_SETS = {
                   'bridge.py': 'c24234f794e4a1347b137fb0180862f152c937924cad93c1cfbffae4035d68f9',
                   'mobile_setup.py': '78ed4a0f75a16ba15298649713db62d3434c86e894ba0a3cace5385907389550'},
 }
-REMOVAL = '"""Embedded UID501 helper: no payload imports, no PID-based signalling."""\nimport contextlib\nimport fcntl\nimport os\nimport socket\nimport stat\n\nDOCS = \'/var/mobile/Documents\'\nDOCS_ALIAS = \'/private/var/mobile/Documents\'\nSTAGE = \'identity\'\nBASE = \'OpenMinis-Jailbreak\'\nALIAS = \'openminis-jailbreak\'\nPORT = 18765\n\ndef identity():\n    if os.getuid() != 501 or os.geteuid() != 501:\n        raise RuntimeError(\'UID501 required\')\n\ndef directory(name, parent=None):\n    return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)\n\n@contextlib.contextmanager\ndef documents():\n    global STAGE\n    STAGE = \'documents-anchor\'\n    identity()\n    # Only these two package-fixed system paths may follow mappings. No caller\n    # input, project/state component, or root-side deletion uses this exception.\n    fd = os.open(DOCS, os.O_RDONLY | os.O_DIRECTORY)\n    try:\n        info = os.fstat(fd)\n        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 501:\n            raise RuntimeError(\'Unsafe Documents owner/type\')\n        alternate = os.open(DOCS_ALIAS, os.O_RDONLY | os.O_DIRECTORY)\n        try:\n            other = os.fstat(alternate)\n            if (info.st_dev, info.st_ino) != (other.st_dev, other.st_ino):\n                raise RuntimeError(\'Documents aliases disagree\')\n        finally: os.close(alternate)\n        yield fd\n    finally: os.close(fd)\n\ndef exists(fd, name):\n    try: return os.stat(name, dir_fd=fd, follow_symlinks=False)\n    except FileNotFoundError: return None\n\ndef socket_free():\n    identity()\n    # Match HTTPServer reuse semantics, yet reject an active TCP listener.\n    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:\n        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n        s.bind((\'127.0.0.1\', PORT))\n        s.listen(1)\n\ndef fresh():\n    global STAGE\n    with documents() as fd:\n        STAGE = \'project-conflict\'\n        if exists(fd, ALIAS) or exists(fd, BASE):\n            raise RuntimeError(\'Canonical project or lowercase alias already exists\')\n    STAGE = \'socket\'\n    socket_free()\n    STAGE = \'fresh-complete\'\n\ndef checked(operation):\n    # Never print exception text, paths from exceptions, tokens or child output.\n    import sys\n    try:\n        {\'fresh\': fresh, \'stopped\': stopped, \'cleanup\': cleanup}[operation]()\n    except Exception:\n        tag = STAGE if operation == \'fresh\' else operation\n        print(\'HELPER_FAIL:\' + tag, file=sys.stderr)\n        raise SystemExit(1)\n\ndef stopped():\n    socket_free()\n    # Lock is inspected by descriptor, never imported and never used as a PID.\n    try:\n        with documents() as fd:\n            if not exists(fd, BASE): return\n            project = directory(BASE, fd)\n            try:\n                if not exists(project, \'.bridge-state\'): return\n                state = directory(\'.bridge-state\', project)\n                try:\n                    try: lock = os.open(\'supervisor-v030.lock\', os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=state)\n                    except FileNotFoundError: return\n                    try:\n                        info = os.fstat(lock)\n                        if not stat.S_ISREG(info.st_mode) or info.st_uid != 501 or info.st_nlink != 1:\n                            raise RuntimeError(\'Unsafe supervisor lock\')\n                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n                    finally: os.close(lock)\n                finally: os.close(state)\n            finally: os.close(project)\n    except FileNotFoundError: pass\n\ndef erase(parent, name):\n    info = exists(parent, name)\n    if info is None: return\n    if stat.S_ISDIR(info.st_mode):\n        fd = directory(name, parent)\n        try:\n            for item in os.listdir(fd): erase(fd, item)\n        finally: os.close(fd)\n        os.rmdir(name, dir_fd=parent)\n    else:\n        # Unlink symlink/hardlink names only; never touch the target contents.\n        os.unlink(name, dir_fd=parent)\n\ndef cleanup():\n    identity()\n    try:\n        with documents() as fd:\n            if exists(fd, ALIAS): print(\'WARNING: historical lowercase path preserved\')\n            info = exists(fd, BASE)\n            if info is None: return\n            if not stat.S_ISDIR(info.st_mode) or info.st_uid != 501:\n                print(\'WARNING: conflicting canonical path preserved\'); return\n            project = directory(BASE, fd)\n            try: erase(project, \'.bridge-state\')\n            finally: os.close(project)\n            try: os.rmdir(BASE, dir_fd=fd)\n            except OSError: print(\'NOTICE: ordinary project files preserved\')\n    except FileNotFoundError: pass\n'
+REMOVAL = '"""Embedded UID501 helper: no payload imports, no PID-based signalling."""\nimport contextlib\nimport fcntl\nimport os\nimport socket\nimport stat\n\nDOCS = \'/var/mobile/Documents\'\nDOCS_ALIAS = \'/private/var/mobile/Documents\'\nSTAGE = \'identity\'\nBASE = \'OpenMinis-Jailbreak\'\nALIAS = \'openminis-jailbreak\'\nPORT = 18765\n\ndef identity():\n    if os.getuid() != 501 or os.geteuid() != 501:\n        raise RuntimeError(\'UID501 required\')\n\ndef directory(name, parent=None):\n    return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)\n\n@contextlib.contextmanager\ndef documents():\n    global STAGE\n    STAGE = \'documents-anchor\'\n    identity()\n    # Only these two package-fixed system paths may follow mappings. No caller\n    # input, project/state component, or root-side deletion uses this exception.\n    fd = os.open(DOCS, os.O_RDONLY | os.O_DIRECTORY)\n    try:\n        info = os.fstat(fd)\n        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 501:\n            raise RuntimeError(\'Unsafe Documents owner/type\')\n        alternate = os.open(DOCS_ALIAS, os.O_RDONLY | os.O_DIRECTORY)\n        try:\n            other = os.fstat(alternate)\n            if (info.st_dev, info.st_ino) != (other.st_dev, other.st_ino):\n                raise RuntimeError(\'Documents aliases disagree\')\n        finally: os.close(alternate)\n        yield fd\n    finally: os.close(fd)\n\ndef exists(fd, name):\n    try: return os.stat(name, dir_fd=fd, follow_symlinks=False)\n    except FileNotFoundError: return None\n\ndef socket_free():\n    identity()\n    # Match HTTPServer reuse semantics, yet reject an active TCP listener.\n    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:\n        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n        s.bind((\'127.0.0.1\', PORT))\n        s.listen(1)\n\ndef fresh():\n    global STAGE\n    with documents() as fd:\n        STAGE = \'project-conflict\'\n        if exists(fd, ALIAS) or exists(fd, BASE):\n            raise RuntimeError(\'Canonical project or lowercase alias already exists\')\n    STAGE = \'socket\'\n    socket_free()\n    STAGE = \'fresh-complete\'\n\ndef checked(operation):\n    # Never print exception text, paths from exceptions, tokens or child output.\n    import sys\n    try:\n        {\'fresh\': fresh, \'stopped\': stopped, \'cleanup\': cleanup}[operation]()\n    except Exception:\n        tag = STAGE if operation == \'fresh\' else operation\n        print(\'HELPER_FAIL:\' + tag, file=sys.stderr)\n        raise SystemExit(1)\n\ndef stopped():\n    socket_free()\n    # Lock is inspected by descriptor, never imported and never used as a PID.\n    try:\n        with documents() as fd:\n            if not exists(fd, BASE): return\n            project = directory(BASE, fd)\n            try:\n                if not exists(project, \'.jailmcp\'): return\n                state = directory(\'.jailmcp\', project)\n                try:\n                    try: lock = os.open(\'supervisor-v030.lock\', os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=state)\n                    except FileNotFoundError: return\n                    try:\n                        info = os.fstat(lock)\n                        if not stat.S_ISREG(info.st_mode) or info.st_uid != 501 or info.st_nlink != 1:\n                            raise RuntimeError(\'Unsafe supervisor lock\')\n                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n                    finally: os.close(lock)\n                finally: os.close(state)\n            finally: os.close(project)\n    except FileNotFoundError: pass\n\ndef erase(parent, name):\n    info = exists(parent, name)\n    if info is None: return\n    if stat.S_ISDIR(info.st_mode):\n        fd = directory(name, parent)\n        try:\n            for item in os.listdir(fd): erase(fd, item)\n        finally: os.close(fd)\n        os.rmdir(name, dir_fd=parent)\n    else:\n        # Unlink symlink/hardlink names only; never touch the target contents.\n        os.unlink(name, dir_fd=parent)\n\ndef cleanup():\n    identity()\n    try:\n        with documents() as fd:\n            if exists(fd, ALIAS): print(\'WARNING: historical lowercase path preserved\')\n            info = exists(fd, BASE)\n            if info is None: return\n            if not stat.S_ISDIR(info.st_mode) or info.st_uid != 501:\n                print(\'WARNING: conflicting canonical path preserved\'); return\n            project = directory(BASE, fd)\n            try: erase(project, \'.jailmcp\')\n            finally: os.close(project)\n            try: os.rmdir(BASE, dir_fd=fd)\n            except OSError: print(\'NOTICE: ordinary project files preserved\')\n    except FileNotFoundError: pass\n'
 ENV = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME': '/var/mobile', 'PYTHONUNBUFFERED': '1'}
 
 def run(args, mobile=False, timeout=25):
@@ -212,7 +212,7 @@ def active():
 
 def mobile(code, timeout=30):
     return run(['/usr/bin/python3', '-I', '-B', '-c',
-        "import sys; sys.path.insert(0,'/usr/local/lib/openminis-jb'); " + code], mobile=True, timeout=timeout)
+        "import sys; sys.path.insert(0,'/usr/local/lib/jailmcp'); " + code], mobile=True, timeout=timeout)
 
 def validate_mobile():
     # No mobile source executed: code() only hashes and compiles, after setuid.
@@ -961,7 +961,7 @@ def retain_previous(meta):
 # are never touched. The restore reads only the snapshot and its manifest, which
 # is what makes it work when the unpack already deleted the files themselves.
 
-ABORT_OK = ('OpenMinis-Jailbreak: dpkg aborted the upgrade after preinst; the pre-upgrade root '
+ABORT_OK = ('JailMCP: dpkg aborted the upgrade after preinst; the pre-upgrade root '
     'runtime, service plist and mobile active pointer were restored from the same-boot snapshot, '
     'the previous version is running and healthy, and token, config and audit were not touched '
     '(the snapshot was kept at ' + str(TRANSACTION) + ' for review)')
@@ -1042,7 +1042,7 @@ def postrm_abort(action):
 
 # ------------------------------------------------ recovery helper (0.3.7)
 #
-# /usr/local/bin/openminis-jb-restore-runtime is generated from this module (see
+# /usr/local/bin/jailmcp-restore-runtime is generated from this module (see
 # build.py) and runs as root. It reads only the retained rollback area, uses the
 # embedded UID501 helpers through mobile() for the mobile pointer, never reads or
 # prints the token as root, and never writes token/config/audit. The helper does
@@ -1083,7 +1083,7 @@ def helper_preflight():
 
 def helper_restore(manifest, dry, pointer_only):
     """Verify, restore, restart, report. Returns the process exit status."""
-    prefix = 'openminis-jb-restore-runtime: '
+    prefix = 'jailmcp-restore-runtime: '
     print(prefix + 'manifest ok: ' + manifest['from_label'] + ' (' + manifest['from_version'] +
           ') -> ' + manifest['to_version'] + ', captured after boot ' + manifest['boot'][:12])
     runtime = plist = None
@@ -1162,14 +1162,14 @@ def restore_main(argv):
         print('REFUSED: no valid retained rollback manifest at ' + str(PREVIOUS / 'meta.json') +
               ' (missing, corrupt or unknown schema); nothing changed')
         return 1
-    print('openminis-jb-restore-runtime: ' + PREV_EXEC + ' ' +
+    print('jailmcp-restore-runtime: ' + PREV_EXEC + ' ' +
           ('--dry-run' if 'dry' in flags else '') + (' --pointer-only' if 'pointer' in flags else ''))
     if os.path.lexists(TRANSACTION):
-        print('openminis-jb-restore-runtime: note: an upgrade transaction exists at ' +
+        print('jailmcp-restore-runtime: note: an upgrade transaction exists at ' +
               str(TRANSACTION) + '; it is left untouched (finish or retry the package operation)')
     recorded = installed_version()
     if recorded is not None and manifest['to_version'] != recorded:
-        print('openminis-jb-restore-runtime: note: dpkg records ' + recorded +
+        print('jailmcp-restore-runtime: note: dpkg records ' + recorded +
               ', the manifest targets ' + manifest['to_version'] + '; continuing anyway')
     try:
         return helper_restore(manifest, dry='dry' in flags, pointer_only='pointer' in flags)
@@ -1250,7 +1250,7 @@ def upgrade_preinst(args):
         try: discard_transaction()
         except Exception: pass
         raise
-    print('OpenMinis-Jailbreak: upgrade preflight passed (installed ' + label + ' -> ' + VERSION + '); '
+    print('JailMCP: upgrade preflight passed (installed ' + label + ' -> ' + VERSION + '); '
           'root runtime, plist and mobile pointer snapshotted; service stopped; '
           'token, config, audit and versioned bridges untouched')
 
@@ -1333,11 +1333,11 @@ def upgrade_activate(r, meta=None):
                 start_service(); notes.append('service restarted')
             except Exception: notes.append('service restart not verified')
         REPORTED = True
-        sys.stderr.write('OpenMinis-Jailbreak: UPGRADE FAILED stage=' + STAGE + '; ' + '; '.join(notes) +
+        sys.stderr.write('JailMCP: UPGRADE FAILED stage=' + STAGE + '; ' + '; '.join(notes) +
             '. Token, config and audit were not modified by this package; this step exits non-zero.\n')
         sys.stderr.flush()
         raise RuntimeError('Upgrade failed; recovery attempted')
-    print('OpenMinis-Jailbreak: upgraded in place (' + str(meta['label'] if meta else 'no-snapshot') + ' -> ' +
+    print('JailMCP: upgraded in place (' + str(meta['label'] if meta else 'no-snapshot') + ' -> ' +
           VERSION + '); token, config and audit preserved; UID501 API3 service healthy')
 
 def postinst_configure():
@@ -1358,7 +1358,7 @@ def postinst_configure():
         create_receipt()
     if before:
         validate_mobile(); healthy()
-        print('OpenMinis-Jailbreak: existing API3 service adopted without restart; data unchanged')
+        print('JailMCP: existing API3 service adopted without restart; data unchanged')
         return
     old = DEST.read_bytes() if DEST.exists() else None
     stage('postinst-mobile-setup')
@@ -1379,7 +1379,7 @@ def postinst_configure():
             if DEST.exists(): DEST.unlink()
         else: atomic(old)
         raise RuntimeError('Activation failed; prior plist restored, mobile data preserved') from None
-    print('OpenMinis-Jailbreak: UID501 API3 service healthy; token not printed')
+    print('JailMCP: UID501 API3 service healthy; token not printed')
 
 def main(phase, args):
     global REPORTED
@@ -1445,7 +1445,7 @@ if __name__ == '__main__':
     try: main(sys.argv[1], sys.argv[2:])
     except BaseException:
         if not REPORTED:
-            print('OpenMinis-Jailbreak: FAILED phase=' + sys.argv[1] + ' stage=' + STAGE +
+            print('JailMCP: FAILED phase=' + sys.argv[1] + ' stage=' + STAGE +
                 '. No further changes were made by this step; resolve the named stage and retry '
                 '(clean-install only; preserve and review conflicts). No exception or child output disclosed.',
                 file=sys.stderr)
