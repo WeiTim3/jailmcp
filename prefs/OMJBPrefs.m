@@ -11,6 +11,8 @@
 #import <unistd.h>
 #import <string.h>
 #import <stdlib.h>
+#import <stdio.h>
+#import <stdarg.h>
 
 static NSString * const OMJBTokenRelative =
     @"Documents/OpenMinis-Jailbreak/.bridge-state/token";
@@ -372,6 +374,7 @@ static id OMJBJSON(NSData *data, NSError **error) {
 @implementation OMJBRootListController
 
 - (instancetype)init {
+    OMJBTrace(@"OMJB init");
     self = [super init];
     if (self) {
         _loaded = NO;
@@ -381,6 +384,7 @@ static id OMJBJSON(NSData *data, NSError **error) {
 }
 
 - (void)viewDidLoad {
+    OMJBTrace(@"OMJB viewDidLoad");
     [super viewDidLoad];
     self.title = @"OpenMinis JB";
     self.navigationItem.rightBarButtonItem =
@@ -587,6 +591,7 @@ static id OMJBJSON(NSData *data, NSError **error) {
 @implementation OMJBProjectListController
 
 - (void)viewDidLoad {
+    OMJBTrace(@"OMJB viewDidLoad");
     [super viewDidLoad];
     self.title = @"项目根";
     self.projects = [NSMutableDictionary dictionary];
@@ -734,6 +739,7 @@ static id OMJBJSON(NSData *data, NSError **error) {
 @implementation OMJBLogController
 
 - (void)viewDidLoad {
+    OMJBTrace(@"OMJB viewDidLoad");
     [super viewDidLoad];
     self.title = @"错误日志";
     self.view.backgroundColor = [UIColor systemBackgroundColor];
