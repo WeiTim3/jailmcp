@@ -35,6 +35,8 @@ MEMBERS = [
     'test_upgrade.py',
     'README.md',
     'README.zh-CN.md',
+    '.github/workflows/prefs.yml',
+    '.github/workflows/build.yml',
 ]
 DOCS = ['TEST_REPORT_0371.txt', 'ABORT_TEST_0371.md']
 DIRS = ['source-v030', 'test_fixtures', 'prefs']

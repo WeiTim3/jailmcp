@@ -142,6 +142,19 @@ PreferenceLoader bundle（需要 Theos/SDK 编译），目前还未包含。
 - **一键回退**：`sudo /usr/local/bin/openminis-jb-restore-runtime [--dry-run]`
   （恢复上一份运行时；dpkg 仍记新版本号，装旧 .deb 不推荐）。
 
+## 在 GitHub Actions 上构建面板
+
+仓库带 `.github/workflows/prefs.yml`，在 **macos-14** runner 上用 Xcode 的
+`clang`/`ld` 编译 arm64e bundle，并打出 `.deb`：
+
+```sh
+git push
+# GitHub → Actions → prefs → Run workflow
+```
+
+产物在 Actions 的 `OpenMinis-Jailbreak-deb` / `OpenMinisJBPrefs-bundle`
+Artifacts 里。macOS runner 自带 Xcode 和 iOS SDK，不需要自己准备 clang/ld64。
+
 ## 构建与测试
 
 ```sh
@@ -158,7 +171,7 @@ python3 test_upgrade.py     # 模拟完整 dpkg 序列
 
 ## 状态
 
-`0.3.14-8+experimental`（bridge `0.3.12`，API `3`）。核心能力均真机验证：安装/卸载/重装/原地升级/
+`0.3.14-10+experimental`（bridge `0.3.12`，API `3`）。核心能力均真机验证：安装/卸载/重装/原地升级/
 中断恢复/一键回退/自更新/坏版本回退/重启重越狱恢复/压力边界。仅 EXDEV 跨卷回退未真机触发。
 
 **已知限制**：递归删除非原子（>10000 条目须分片）；`jb_exec` 子进程每文件 256 KiB 上限、

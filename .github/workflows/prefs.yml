@@ -1,0 +1,87 @@
+name: prefs
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'prefs/**'
+      - 'layout/**'
+      - '.github/workflows/prefs.yml'
+      - 'build.py'
+      - 'package_lifecycle.py'
+      - 'source-v030/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build-prefs:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Compile the PreferenceLoader bundle
+        run: |
+          set -euo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          BUNDLE=layout/Library/PreferenceBundles/OpenMinisJBPrefs.bundle
+          ENTRY=layout/Library/PreferenceLoader/Preferences/OpenMinisJBPrefs.plist
+          mkdir -p "$BUNDLE" "$(dirname "$ENTRY")"
+
+          xcrun --sdk iphoneos clang \
+            -target arm64e-apple-ios16.0 -isysroot "$SDK" \
+            -Iprefs/include -fobjc-arc -Wall \
+            -c prefs/OMJBPrefs.m -o "$RUNNER_TEMP/OMJBPrefs.o"
+
+          xcrun --sdk iphoneos clang \
+            -target arm64e-apple-ios16.0 -isysroot "$SDK" \
+            -bundle -Wl,-fixup_chains -Wl,-undefined,dynamic_lookup \
+            -framework Foundation -framework UIKit \
+            -o "$BUNDLE/OpenMinisJBPrefs" "$RUNNER_TEMP/OMJBPrefs.o"
+
+          codesign --force --sign - "$BUNDLE/OpenMinisJBPrefs"
+
+          cp prefs/Resources/Info.plist "$BUNDLE/Info.plist"
+          cp prefs/Resources/Root.plist "$BUNDLE/Root.plist"
+          cp prefs/Resources/icon.png "$BUNDLE/icon.png"
+          cp prefs/Resources/OpenMinisJBPrefs.plist "$ENTRY"
+          chmod 0755 "$BUNDLE/OpenMinisJBPrefs"
+
+      - name: Verify the Mach-O
+        run: |
+          BUNDLE=layout/Library/PreferenceBundles/OpenMinisJBPrefs.bundle
+          otool -hv "$BUNDLE/OpenMinisJBPrefs"
+          otool -l "$BUNDLE/OpenMinisJBPrefs" | grep -E "LC_DYLD_CHAINED_FIXUPS|LC_BUILD_VERSION|LC_CODE_SIGNATURE"
+          codesign -dvv "$BUNDLE/OpenMinisJBPrefs" || true
+
+      - name: Build the .deb
+        run: |
+          brew install dpkg
+          python3 build.py
+          python3 - <<'PY'
+          import hashlib, pathlib
+          for p in pathlib.Path('.').glob('OpenMinis-Jailbreak_*.deb'):
+              print(hashlib.sha256(p.read_bytes()).hexdigest(), p.name)
+          PY
+
+      - name: Bundle zip for manual installation
+        run: |
+          cd layout
+          zip -r ../OpenMinisJBPrefs.bundle.zip \
+            Library/PreferenceBundles/OpenMinisJBPrefs.bundle \
+            Library/PreferenceLoader/Preferences/OpenMinisJBPrefs.plist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenMinis-Jailbreak-deb
+          path: OpenMinis-Jailbreak_*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenMinisJBPrefs-bundle
+          path: OpenMinisJBPrefs.bundle.zip

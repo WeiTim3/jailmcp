@@ -1,4 +1,4 @@
-# OpenMinis-Jailbreak 0.3.14-8+experimental
+# OpenMinis-Jailbreak 0.3.14-10+experimental
 
 以 launchd 服务形式运行、通过本机 MCP 向 OpenMinis 提供越狱侧能力的服务包。
 OpenMinis 本体不需要越狱权限、不需要注入、不需要改签名。
@@ -7,10 +7,10 @@ OpenMinis 本体不需要越狱权限、不需要注入、不需要改签名。
 
 ## 本版改动（0.3.14）
 
-> `0.3.14-8`：改用 **Theos 的 aarch64 LLVM 19 工具链**（L1ghtmann/llvm-project
-> 的 `iOSToolchain-aarch64`，Apple ld64 + TAPI），和 GitHub 上正常的
-> PreferenceLoader 面板同一套构建方式；恢复静态 `PSListController` 子类，
-> 不再自己拼 lld 产物。
+> `0.3.14-10`：动态类 + Theos aarch64 工具链。二进制里没有
+> `__objc_classlist`，完全避开 libobjc `readClass`；构造函数只用
+> `objc_getClass`，不再在 dyld 初始化阶段发 Objective-C 消息。
+> 仍保留 GitHub Actions macOS 构建工作流。
 
 bridge 版本提升到 `0.3.12`：新增 **iOS 设置里的原生面板**（PreferenceLoader
 bundle），并保留一个可选的网页控制台。
