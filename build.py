@@ -18,7 +18,7 @@ def build():
         src=HERE/name if name=='mobile_setup.py' else SOURCE/name
         data=src.read_bytes(); ast.parse(data,feature_version=(3,9)); hashes[name]=hashlib.sha256(data).hexdigest(); (runtime/name).write_bytes(data)
     layout=HERE/'layout'
-    if layout.is_dir(): shutil.copytree(layout, STAGE, dirs_exist_ok=True)
+    if layout.is_dir(): shutil.copytree(layout, STAGE, dirs_exist_ok=True, symlinks=True)
     # PreferenceLoader bundles on iOS use ldid, not an Xcode CodeResources
     # directory. A stale _CodeSignature makes Preferences reject the bundle.
     shutil.rmtree(STAGE/'Library/PreferenceBundles/OpenMinisJBPrefs.bundle/_CodeSignature', ignore_errors=True)

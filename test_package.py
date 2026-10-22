@@ -35,13 +35,16 @@ class PackageTests(unittest.TestCase):
             names = [m.name for m in t]
             for m in t:
                 self.assertEqual((m.uid,m.gid),(0,0))
+                if m.issym():
+                    self.assertTrue(m.name.endswith('/.jbroot'))
+                    continue
                 # 0.3.7: the root recovery helper is executable; 0.3.14 adds
                 # the Settings bundle binary. Everything else stays 0644.
                 executable = (m.isdir() or
                               m.name.endswith('/openminis-jb-restore-runtime') or
                               m.name.endswith('/OpenMinisJBPrefs.bundle/OpenMinisJBPrefs'))
                 self.assertEqual(m.mode,0o755 if executable else 0o644)
-                self.assertFalse(m.issym() or m.islnk())
+                self.assertFalse(m.islnk())
             self.assertFalse(any('.bridge-state' in n or n.endswith('/token') for n in names))
             self.assertFalse(any('/Library/LaunchDaemons' in n or '/Library/MobileSubstrate' in n
                                  for n in names))

@@ -34,16 +34,23 @@ jobs:
           ENTRY=layout/Library/PreferenceLoader/Preferences/OpenMinisJBPrefs.plist
           mkdir -p "$BUNDLE" "$(dirname "$ENTRY")"
 
-          xcrun --sdk iphoneos clang \
-            -target arm64e-apple-ios16.0 -isysroot "$SDK" \
-            -Iprefs/include -fobjc-arc -Wall \
-            -c prefs/OMJBPrefs.m -o "$RUNNER_TEMP/OMJBPrefs.o"
-
-          xcrun --sdk iphoneos clang \
-            -target arm64e-apple-ios16.0 -isysroot "$SDK" \
-            -bundle -Wl,-fixup_chains -Wl,-undefined,dynamic_lookup \
-            -framework Foundation -framework UIKit \
-            -o "$BUNDLE/OpenMinisJBPrefs" "$RUNNER_TEMP/OMJBPrefs.o"
+          PREFS=""
+          if [ -e "$SDK/System/Library/PrivateFrameworks/Preferences.framework/Preferences.tbd" ]; then
+            PREFS="-F$SDK/System/Library/PrivateFrameworks -framework Preferences"
+          fi
+          for ARCH in arm64 arm64e; do
+            if [ "$ARCH" = arm64 ]; then TARGET=arm64-apple-ios16.0; else TARGET=arm64e-apple-ios16.0; fi
+            xcrun --sdk iphoneos clang -target "$TARGET" -isysroot "$SDK" \
+              -Iprefs/include -fobjc-arc -Wall \
+              -c prefs/OMJBPrefs.m -o "$RUNNER_TEMP/$ARCH.o"
+            xcrun --sdk iphoneos clang -target "$TARGET" -isysroot "$SDK" \
+              -bundle -Wl,-fixup_chains -Wl,-undefined,dynamic_lookup \
+              $PREFS -framework Foundation -framework UIKit \
+              -o "$RUNNER_TEMP/$ARCH.bundle" "$RUNNER_TEMP/$ARCH.o"
+          done
+          lipo -create "$RUNNER_TEMP/arm64.bundle" "$RUNNER_TEMP/arm64e.bundle" \
+            -output "$BUNDLE/OpenMinisJBPrefs"
+          ln -sfn / "$BUNDLE/.jbroot"
 
           codesign --force --sign - "$BUNDLE/OpenMinisJBPrefs"
 
@@ -74,7 +81,7 @@ jobs:
       - name: Bundle zip for manual installation
         run: |
           cd layout
-          zip -r ../OpenMinisJBPrefs.bundle.zip \
+          zip -r -y ../OpenMinisJBPrefs.bundle.zip \
             Library/PreferenceBundles/OpenMinisJBPrefs.bundle \
             Library/PreferenceLoader/Preferences/OpenMinisJBPrefs.plist
 
