@@ -37,7 +37,7 @@ jobs:
           CORE="$RUNNER_TEMP/frida-core"
           xcrun --sdk iphoneos clang \
             -target arm64e-apple-ios16.0 -isysroot "$SDK" \
-            -I"$CORE" -O2 -Wall -c frida/frida-cli.c -o "$RUNNER_TEMP/frida-cli.o"
+            -I"$CORE" -O2 -Wall -c frida-src/frida-cli.c -o "$RUNNER_TEMP/frida-cli.o"
           xcrun --sdk iphoneos clang \
             -target arm64e-apple-ios16.0 -isysroot "$SDK" \
             -Wl,-fixup_chains \
