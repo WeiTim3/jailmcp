@@ -76,9 +76,9 @@ jb_frida_sessions
 | OpenMinis-Jailbreak | JailMCP | 0.4.0 |
 | `openminis-jb` server name | `jailmcp` | 0.4.0 |
 | `app.openminis.jailbreak` | `dev.jailmcp.bridge` | 0.5.0 |
-| `app.openminis.jbbridge` | `dev.jailmcp.bridge` | 0.5.0 |
-| `/usr/local/lib/openminis-jb` | `/usr/local/lib/jailmcp` | 0.5.0 |
-| `.bridge-state` | `.jailmcp` | 0.5.0 |
+| `app.openminis.jbbridge` | `dev.jailmcp.bridge` | 0.6.0 |
+| `/usr/local/lib/openminis-jb` | `/usr/local/lib/jailmcp` | 0.6.0 |
+| `.bridge-state` | `.jailmcp` | 0.6.0 |
 | `jb_*` tools | unchanged | permanent |
 
 The old package/path/state names remain valid through the migration release.

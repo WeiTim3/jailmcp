@@ -23,7 +23,7 @@ PREVIOUS = Path('/usr/local/lib/openminis-jb-previous')
 PREV_SCHEMA = 'openminis-jb-previous-1'
 PREV_EXEC = '/usr/local/bin/openminis-jb-restore-runtime'
 RECEIPT = STORE / '.clean-install-v032'
-VERSION = '0.3.12-1+experimental'
+VERSION = '0.5.0+experimental'
 RECEIPT_DATA = ('OpenMinis-Jailbreak clean-install ' + VERSION + '\n').encode()
 RECEIPT_PREFIX = b'OpenMinis-Jailbreak clean-install '
 SCHEMA = 'openminis-jb-upgrade-1'
@@ -80,8 +80,27 @@ KNOWN_SETS = {
                  'maintenance_runtime.py': 'e38fe25d1d61ba759824a3d17af2101af0fbc1a6533c3444e8636211d95af46a',
                  'bridge.py': 'e4325d728807ead392e82c1bf1b63169e82069b7db30f3fae052c194d13cba94',
                  'mobile_setup.py': '78ed4a0f75a16ba15298649713db62d3434c86e894ba0a3cace5385907389550'},
+    # 0.3.12 shipped bridge 0.3.10 but its own set was never listed, which
+    # blocked the first in-place upgrade to 0.3.13 at upgrade-runtime-allowlist.
+    # Kept so a device on 0.3.12 can upgrade in place.
+    '0.3.12-1': {'launcher.py': 'b905c063a8e7235b2e40cd1e3137e77372537d4611ff0af1e410049e9f96b497',
+                 'maintenance_runtime.py': 'e38fe25d1d61ba759824a3d17af2101af0fbc1a6533c3444e8636211d95af46a',
+                 'bridge.py': '112cad8c67c5901be434046c1c5f48fadc89a2f93dfcee433e092419330c4191',
+                 'mobile_setup.py': '78ed4a0f75a16ba15298649713db62d3434c86e894ba0a3cace5385907389550'},
+    '0.3.13-2': {'launcher.py': 'b905c063a8e7235b2e40cd1e3137e77372537d4611ff0af1e410049e9f96b497',
+                 'maintenance_runtime.py': '79a9b4a8dee995c48a22307db52f5b65561db4a05dc7bf31d012cf414e8d7d58',
+                 'bridge.py': '71c29b304fad659517508424603f3f002c3b5d847fda82654b87de38accdfa78',
+                 'mobile_setup.py': '78ed4a0f75a16ba15298649713db62d3434c86e894ba0a3cace5385907389550'},
+    '0.3.13-2+frida': {'launcher.py': 'b905c063a8e7235b2e40cd1e3137e77372537d4611ff0af1e410049e9f96b497',
+                 'maintenance_runtime.py': '79a9b4a8dee995c48a22307db52f5b65561db4a05dc7bf31d012cf414e8d7d58',
+                 'bridge.py': 'c719bbc9881322c6469032c7699790738cbf6cddcacbc4b078d4c7be2fda260e',
+                 'mobile_setup.py': '78ed4a0f75a16ba15298649713db62d3434c86e894ba0a3cace5385907389550'},
+    '0.3.14-21': {'launcher.py': 'b905c063a8e7235b2e40cd1e3137e77372537d4611ff0af1e410049e9f96b497',
+                  'maintenance_runtime.py': 'ded8da9e8275b061a8c302b7d232c089b91e4003404fbb48f766e879497a4a55',
+                  'bridge.py': 'c24234f794e4a1347b137fb0180862f152c937924cad93c1cfbffae4035d68f9',
+                  'mobile_setup.py': '78ed4a0f75a16ba15298649713db62d3434c86e894ba0a3cace5385907389550'},
 }
-REMOVAL = ''  # Filled by reproducible builder.
+REMOVAL = '"""Embedded UID501 helper: no payload imports, no PID-based signalling."""\nimport contextlib\nimport fcntl\nimport os\nimport socket\nimport stat\n\nDOCS = \'/var/mobile/Documents\'\nDOCS_ALIAS = \'/private/var/mobile/Documents\'\nSTAGE = \'identity\'\nBASE = \'OpenMinis-Jailbreak\'\nALIAS = \'openminis-jailbreak\'\nPORT = 18765\n\ndef identity():\n    if os.getuid() != 501 or os.geteuid() != 501:\n        raise RuntimeError(\'UID501 required\')\n\ndef directory(name, parent=None):\n    return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)\n\n@contextlib.contextmanager\ndef documents():\n    global STAGE\n    STAGE = \'documents-anchor\'\n    identity()\n    # Only these two package-fixed system paths may follow mappings. No caller\n    # input, project/state component, or root-side deletion uses this exception.\n    fd = os.open(DOCS, os.O_RDONLY | os.O_DIRECTORY)\n    try:\n        info = os.fstat(fd)\n        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 501:\n            raise RuntimeError(\'Unsafe Documents owner/type\')\n        alternate = os.open(DOCS_ALIAS, os.O_RDONLY | os.O_DIRECTORY)\n        try:\n            other = os.fstat(alternate)\n            if (info.st_dev, info.st_ino) != (other.st_dev, other.st_ino):\n                raise RuntimeError(\'Documents aliases disagree\')\n        finally: os.close(alternate)\n        yield fd\n    finally: os.close(fd)\n\ndef exists(fd, name):\n    try: return os.stat(name, dir_fd=fd, follow_symlinks=False)\n    except FileNotFoundError: return None\n\ndef socket_free():\n    identity()\n    # Match HTTPServer reuse semantics, yet reject an active TCP listener.\n    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:\n        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n        s.bind((\'127.0.0.1\', PORT))\n        s.listen(1)\n\ndef fresh():\n    global STAGE\n    with documents() as fd:\n        STAGE = \'project-conflict\'\n        if exists(fd, ALIAS) or exists(fd, BASE):\n            raise RuntimeError(\'Canonical project or lowercase alias already exists\')\n    STAGE = \'socket\'\n    socket_free()\n    STAGE = \'fresh-complete\'\n\ndef checked(operation):\n    # Never print exception text, paths from exceptions, tokens or child output.\n    import sys\n    try:\n        {\'fresh\': fresh, \'stopped\': stopped, \'cleanup\': cleanup}[operation]()\n    except Exception:\n        tag = STAGE if operation == \'fresh\' else operation\n        print(\'HELPER_FAIL:\' + tag, file=sys.stderr)\n        raise SystemExit(1)\n\ndef stopped():\n    socket_free()\n    # Lock is inspected by descriptor, never imported and never used as a PID.\n    try:\n        with documents() as fd:\n            if not exists(fd, BASE): return\n            project = directory(BASE, fd)\n            try:\n                if not exists(project, \'.bridge-state\'): return\n                state = directory(\'.bridge-state\', project)\n                try:\n                    try: lock = os.open(\'supervisor-v030.lock\', os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=state)\n                    except FileNotFoundError: return\n                    try:\n                        info = os.fstat(lock)\n                        if not stat.S_ISREG(info.st_mode) or info.st_uid != 501 or info.st_nlink != 1:\n                            raise RuntimeError(\'Unsafe supervisor lock\')\n                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n                    finally: os.close(lock)\n                finally: os.close(state)\n            finally: os.close(project)\n    except FileNotFoundError: pass\n\ndef erase(parent, name):\n    info = exists(parent, name)\n    if info is None: return\n    if stat.S_ISDIR(info.st_mode):\n        fd = directory(name, parent)\n        try:\n            for item in os.listdir(fd): erase(fd, item)\n        finally: os.close(fd)\n        os.rmdir(name, dir_fd=parent)\n    else:\n        # Unlink symlink/hardlink names only; never touch the target contents.\n        os.unlink(name, dir_fd=parent)\n\ndef cleanup():\n    identity()\n    try:\n        with documents() as fd:\n            if exists(fd, ALIAS): print(\'WARNING: historical lowercase path preserved\')\n            info = exists(fd, BASE)\n            if info is None: return\n            if not stat.S_ISDIR(info.st_mode) or info.st_uid != 501:\n                print(\'WARNING: conflicting canonical path preserved\'); return\n            project = directory(BASE, fd)\n            try: erase(project, \'.bridge-state\')\n            finally: os.close(project)\n            try: os.rmdir(BASE, dir_fd=fd)\n            except OSError: print(\'NOTICE: ordinary project files preserved\')\n    except FileNotFoundError: pass\n'
 ENV = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME': '/var/mobile', 'PYTHONUNBUFFERED': '1'}
 
 def run(args, mobile=False, timeout=25):
@@ -1431,3 +1450,4 @@ if __name__ == '__main__':
                 '(clean-install only; preserve and review conflicts). No exception or child output disclosed.',
                 file=sys.stderr)
         sys.exit(1)
+
