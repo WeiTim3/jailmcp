@@ -23,7 +23,7 @@ PREVIOUS = Path('/usr/local/lib/openminis-jb-previous')
 PREV_SCHEMA = 'openminis-jb-previous-1'
 PREV_EXEC = '/usr/local/bin/openminis-jb-restore-runtime'
 RECEIPT = STORE / '.clean-install-v032'
-VERSION = '0.3.14-12+experimental'
+VERSION = '0.3.14-13+experimental'
 RECEIPT_DATA = ('OpenMinis-Jailbreak clean-install ' + VERSION + '\n').encode()
 RECEIPT_PREFIX = b'OpenMinis-Jailbreak clean-install '
 SCHEMA = 'openminis-jb-upgrade-1'
@@ -1351,10 +1351,9 @@ def sign_prefs_bundle():
               file=sys.stderr)
 
 def postinst_configure():
-    try: sign_prefs_bundle()
-    except Exception:
-        print('WARNING: Settings bundle signing skipped; keeping the build signature',
-              file=sys.stderr)
+    # The GitHub Actions build embeds a codesign signature.  Do not run ldid
+    # here: replacing that signature can make Settings silently fall back to an
+    # empty pane on arm64e.
     r = preflight()
     if os.path.lexists(TRANSACTION):
         meta = transaction_meta()
