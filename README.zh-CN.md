@@ -1,4 +1,4 @@
-# OpenMinis-Jailbreak 0.3.14-1+experimental
+# OpenMinis-Jailbreak 0.3.14-8+experimental
 
 以 launchd 服务形式运行、通过本机 MCP 向 OpenMinis 提供越狱侧能力的服务包。
 OpenMinis 本体不需要越狱权限、不需要注入、不需要改签名。
@@ -7,9 +7,22 @@ OpenMinis 本体不需要越狱权限、不需要注入、不需要改签名。
 
 ## 本版改动（0.3.14）
 
-bridge 版本提升到 `0.3.12`：新增**本机控制台**，并把它做进包里。
+> `0.3.14-8`：改用 **Theos 的 aarch64 LLVM 19 工具链**（L1ghtmann/llvm-project
+> 的 `iOSToolchain-aarch64`，Apple ld64 + TAPI），和 GitHub 上正常的
+> PreferenceLoader 面板同一套构建方式；恢复静态 `PSListController` 子类，
+> 不再自己拼 lld 产物。
 
-- `GET /ui`：一个自包含的设置面板（HTML/CSS/JS 全部内嵌，无外部资源），
+bridge 版本提升到 `0.3.12`：新增 **iOS 设置里的原生面板**（PreferenceLoader
+bundle），并保留一个可选的网页控制台。
+
+- **原生设置面板**：安装后“设置”App 根级出现 **OpenMinis-JB**。状态、重启/回退、
+  `mobile Shell` 开关、项目根增删、复制 token/MCP 地址、错误日志都在里面；
+  直接通过 loopback 调 bridge，不打开网页。源码在 `prefs/`，bundle 在
+  `/Library/PreferenceBundles/OpenMinisJBPrefs.bundle`。
+- 如果入口不出现：关闭并重开“设置”；仍看不到时，在越狱终端执行
+  `ldid -S /Library/PreferenceBundles/OpenMinisJBPrefs.bundle/OpenMinisJBPrefs`
+  再重开。
+- `GET /ui`（可选网页控制台）：一个自包含的设置面板（HTML/CSS/JS 全部内嵌，无外部资源），
   显示桥状态、版本、PID、supervisor、可回退版本、项目根、错误日志；
   可以切换 mobile Shell、增删项目根、重启服务、回退上一版。
 - `jb_ui_url`（第 32 个工具）：返回一个**一次性、120 秒有效**的链接。

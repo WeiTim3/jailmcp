@@ -37,7 +37,7 @@ MEMBERS = [
     'README.zh-CN.md',
 ]
 DOCS = ['TEST_REPORT_0371.txt', 'ABORT_TEST_0371.md']
-DIRS = ['source-v030', 'test_fixtures']
+DIRS = ['source-v030', 'test_fixtures', 'prefs']
 
 def members():
     found = []

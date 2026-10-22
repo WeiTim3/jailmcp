@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>items</key>
+    <array>
+        <dict>
+            <key>cell</key><string>PSGroupCell</string>
+            <key>label</key><string>状态</string>
+            <key>footerText</key><string>bridge 以 mobile 身份运行，只监听 127.0.0.1。</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSTitleValueCell</string>
+            <key>label</key><string>运行状态</string>
+            <key>id</key><string>health</string>
+            <key>get</key><string>statusValue:</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSTitleValueCell</string>
+            <key>label</key><string>bridge</string>
+            <key>id</key><string>version</string>
+            <key>get</key><string>statusValue:</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSTitleValueCell</string>
+            <key>label</key><string>API</string>
+            <key>id</key><string>api</string>
+            <key>get</key><string>statusValue:</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSTitleValueCell</string>
+            <key>label</key><string>PID / UID</string>
+            <key>id</key><string>pid</string>
+            <key>get</key><string>statusValue:</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSTitleValueCell</string>
+            <key>label</key><string>supervisor</string>
+            <key>id</key><string>supervisor</string>
+            <key>get</key><string>statusValue:</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSTitleValueCell</string>
+            <key>label</key><string>可回退版本</string>
+            <key>id</key><string>rollback</string>
+            <key>get</key><string>statusValue:</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSTitleValueCell</string>
+            <key>label</key><string>source sha256</string>
+            <key>id</key><string>source</string>
+            <key>get</key><string>statusValue:</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSTitleValueCell</string>
+            <key>label</key><string>最近错误</string>
+            <key>id</key><string>error</string>
+            <key>get</key><string>statusValue:</string>
+        </dict>
+
+        <dict>
+            <key>cell</key><string>PSGroupCell</string>
+            <key>label</key><string>操作</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSButtonCell</string>
+            <key>label</key><string>重启 bridge</string>
+            <key>action</key><string>restart</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSButtonCell</string>
+            <key>label</key><string>回退上一版</string>
+            <key>action</key><string>rollback</string>
+        </dict>
+
+        <dict>
+            <key>cell</key><string>PSGroupCell</string>
+            <key>label</key><string>能力</string>
+            <key>footerText</key><string>Shell 与整机读取都以 mobile 身份运行，不是沙箱。关闭后 jb_exec 会拒绝执行。</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSSwitchCell</string>
+            <key>label</key><string>mobile Shell</string>
+            <key>id</key><string>shell</string>
+            <key>get</key><string>shellValue:</string>
+            <key>set</key><string>setShell:forSpecifier:</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSTitleValueCell</string>
+            <key>label</key><string>项目根</string>
+            <key>id</key><string>projects</string>
+            <key>get</key><string>statusValue:</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSButtonCell</string>
+            <key>label</key><string>管理项目根…</string>
+            <key>action</key><string>manageProjects</string>
+        </dict>
+
+        <dict>
+            <key>cell</key><string>PSGroupCell</string>
+            <key>label</key><string>连接</string>
+            <key>footerText</key><string>token 位于 .bridge-state/token（0600）。复制的 token 等同 mobile 权限，请勿分享。</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSTitleValueCell</string>
+            <key>label</key><string>MCP 地址</string>
+            <key>id</key><string>url</string>
+            <key>get</key><string>statusValue:</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSButtonCell</string>
+            <key>label</key><string>复制 MCP 地址</string>
+            <key>action</key><string>copyURL</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSButtonCell</string>
+            <key>label</key><string>复制 token</string>
+            <key>action</key><string>copyToken</string>
+        </dict>
+
+        <dict>
+            <key>cell</key><string>PSGroupCell</string>
+            <key>label</key><string>诊断</string>
+        </dict>
+        <dict>
+            <key>cell</key><string>PSButtonCell</string>
+            <key>label</key><string>查看错误日志</string>
+            <key>action</key><string>showLog</string>
+        </dict>
+    </array>
+</dict>
+</plist>

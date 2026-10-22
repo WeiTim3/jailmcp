@@ -35,12 +35,33 @@ class PackageTests(unittest.TestCase):
             names = [m.name for m in t]
             for m in t:
                 self.assertEqual((m.uid,m.gid),(0,0))
-                # 0.3.7: only the root recovery helper is executable; every other
-                # payload file stays 0644 and every directory 0755.
-                executable = m.isdir() or m.name.endswith('/openminis-jb-restore-runtime')
+                # 0.3.7: the root recovery helper is executable; 0.3.14 adds
+                # the Settings bundle binary. Everything else stays 0644.
+                executable = (m.isdir() or
+                              m.name.endswith('/openminis-jb-restore-runtime') or
+                              m.name.endswith('/OpenMinisJBPrefs.bundle/OpenMinisJBPrefs'))
                 self.assertEqual(m.mode,0o755 if executable else 0o644)
                 self.assertFalse(m.issym() or m.islnk())
-            self.assertFalse(any('/Library' in n or '.bridge-state' in n or n.endswith('/token') for n in names))
+            self.assertFalse(any('.bridge-state' in n or n.endswith('/token') for n in names))
+            self.assertFalse(any('/Library/LaunchDaemons' in n or '/Library/MobileSubstrate' in n
+                                 for n in names))
+            self.assertTrue(any(n.endswith('/OpenMinisJBPrefs.bundle/OpenMinisJBPrefs') for n in names))
+            self.assertTrue(any(n.endswith('/PreferenceLoader/Preferences/OpenMinisJBPrefs.plist')
+                                for n in names))
+            for name in ('Info.plist', 'Root.plist', 'icon.png'):
+                self.assertTrue(any(n.endswith('/OpenMinisJBPrefs.bundle/' + name) for n in names))
+            bundle_info = plistlib.loads(t.extractfile(
+                './Library/PreferenceBundles/OpenMinisJBPrefs.bundle/Info.plist').read())
+            self.assertEqual(bundle_info['NSPrincipalClass'], 'OMJBRootListController')
+            self.assertEqual(bundle_info['CFBundleExecutable'], 'OpenMinisJBPrefs')
+            root_plist = plistlib.loads(t.extractfile(
+                './Library/PreferenceBundles/OpenMinisJBPrefs.bundle/Root.plist').read())
+            self.assertGreaterEqual(len(root_plist['items']), 1)
+            executable = t.extractfile(
+                './Library/PreferenceBundles/OpenMinisJBPrefs.bundle/OpenMinisJBPrefs').read(12)
+            self.assertEqual(executable[:4], b'\xcf\xfa\xed\xfe')
+            self.assertEqual(executable[4:8], b'\x0c\x00\x00\x01')
+            self.assertEqual(executable[8:12], b'\x02\x00\x00\x80')
             self.assertFalse(any(n.endswith(('.deb','.pyc','test_package.py')) for n in names))
             for name in ('launcher.py','maintenance_runtime.py','bridge.py'):
                 self.assertEqual(t.extractfile('./usr/local/lib/openminis-jb/'+name).read(), (HERE/'source-v030'/name).read_bytes())

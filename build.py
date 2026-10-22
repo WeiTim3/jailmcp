@@ -17,6 +17,8 @@ def build():
     for name in ('launcher.py','maintenance_runtime.py','bridge.py','mobile_setup.py'):
         src=HERE/name if name=='mobile_setup.py' else SOURCE/name
         data=src.read_bytes(); ast.parse(data,feature_version=(3,9)); hashes[name]=hashlib.sha256(data).hexdigest(); (runtime/name).write_bytes(data)
+    layout=HERE/'layout'
+    if layout.is_dir(): shutil.copytree(layout, STAGE, dirs_exist_ok=True)
     control=STAGE/'DEBIAN'; control.mkdir()
     (control/'control').write_text(f'''Package: app.openminis.jailbreak
 Name: OpenMinis-Jailbreak
@@ -30,7 +32,8 @@ Depends: libpython3.9 (>= 3.9.9-2)
 Description: OpenMinis-Jailbreak local API3 mobile service (experimental)
  Canonical OpenMinis-Jailbreak service with in-place upgrades: Sileo can update
  this package without uninstalling, and the token, config and audit survive.
- No project alias; no data migration.
+ Adds a native iOS Settings pane for status, restart/rollback, the mobile Shell
+ switch and project roots. No project alias; no data migration.
 ''')
     life=(HERE/'package_lifecycle.py').read_text().replace('HASHES = {}  # Filled by reproducible builder.','HASHES = '+repr(hashes)).replace("REMOVAL = ''  # Filled by reproducible builder.","REMOVAL = "+repr((HERE/'removal_helper.py').read_text()))
     ast.parse(life,feature_version=(3,9))
@@ -56,7 +59,8 @@ Description: OpenMinis-Jailbreak local API3 mobile service (experimental)
     for p in sorted(STAGE.rglob('*')):
         if p.is_dir(): p.chmod(0o755)
         elif p.parent==control: pass
-        elif p==binary: p.chmod(0o755); md5.append(hashlib.md5(p.read_bytes()).hexdigest()+'  '+str(p.relative_to(STAGE)))
+        elif p==binary or (p.parent.name=='OpenMinisJBPrefs.bundle' and p.name=='OpenMinisJBPrefs'):
+            p.chmod(0o755); md5.append(hashlib.md5(p.read_bytes()).hexdigest()+'  '+str(p.relative_to(STAGE)))
         else: p.chmod(0o644); md5.append(hashlib.md5(p.read_bytes()).hexdigest()+'  '+str(p.relative_to(STAGE)))
     (control/'md5sums').write_text('\n'.join(md5)+'\n')
     for p in STAGE.rglob('*'): os.utime(p,(int(EPOCH),int(EPOCH)))

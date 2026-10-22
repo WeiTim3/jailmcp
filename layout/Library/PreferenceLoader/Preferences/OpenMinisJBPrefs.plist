@@ -1,0 +1,10 @@
+{
+    entry = {
+        cell = PSLinkCell;
+        bundle = OpenMinisJBPrefs;
+        detail = OMJBRootListController;
+        icon = icon.png;
+        label = "OpenMinis-JB";
+        isController = YES;
+    };
+}

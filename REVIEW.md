@@ -15,7 +15,7 @@
    返回 `{"error":{"code","message","ref"}}`；异常写入私有 `log-v030.jsonl`；
    新增 `jb_log_tail`；认证失败按 10 秒节流记录。
 4. **发布链滞后** — 部分修。
-   唯一 tag/Release 仍是 `v0.3.8-1`，当前代码是 `0.3.14-1`；
+   唯一 tag/Release 仍是 `v0.3.8-1`，当前代码是 `0.3.14-8`；
    Release 只有 `.deb`，没有 `SHA256SUMS` 与源码包；release job 重建而不是复用测试产物。
    CI 已改为上传/复用同一份产物并附带校验和；**仍需人工打 tag 并发布**。
 5. **CI 漏跑 `test_filetools.py` 与 `test_upgrade.py`，且未在 Python 3.9 验证** — **已修**：
@@ -25,7 +25,13 @@
    `jb_find` 整机读取能力与 token 的同 UID 可读性已写入安全边界。
    仍未做：`protected_paths` denylist、`RLIMIT_NPROC/AS/CPU`、默认关闭 shell。
 
-## 0.3.14 新增：本机控制台
+## 0.3.14 新增：原生设置面板
+
+`PreferenceLoader` bundle（`prefs/`，arm64）把面板放进 iOS 设置 App：
+状态、重启/回退、Shell 开关、项目根增删、复制 token/MCP 地址、错误日志。
+直接调 loopback `/mcp` 与 `/ui/api/config`，不经过网页。
+
+## 0.3.14 附：可选网页控制台
 
 `GET /ui` 是一个内嵌的单页设置面板：状态、版本、supervisor、可回退版本、项目根、
 错误日志，以及重启/回退、Shell 开关、项目根增删。`jb_ui_url` 产生一次性 120 秒

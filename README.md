@@ -39,9 +39,27 @@ token 位于设备上（私密数据，勿分享）：
 
 安装后无需重启；卸载后可直接重装，**不必 purge**。
 
-## 控制台（本机设置面板）
+## iOS 设置面板（原生，推荐）
 
-bridge 自带一个只监听回环的控制台：
+安装后打开“设置”App，根级会出现 **OpenMinis-JB**（PreferenceLoader 加载的
+原生 bundle，源码在 `prefs/`）。它不打开网页，也不依赖 OpenMinis 宿主 App：
+
+- 状态：bridge 版本、API、PID/UID、supervisor、可回退版本、source sha256
+- 操作：重启 bridge、回退上一版（带确认）
+- 能力：`mobile Shell` 开关、项目根的增删（名称 + 绝对路径，后端校验）
+- 连接：复制 MCP 地址、复制 token
+- 诊断：查看最近 50 条错误日志
+
+面板直接用 loopback HTTP 调 `/mcp` 与 `/ui/api/config`，token 从系统目录或
+`.jbroot-*` 目录读取；不经过浏览器，也不需要网页会话。
+
+如果安装后看不到入口：关闭并重新打开“设置”；仍看不到时，在越狱终端执行
+`ldid -S /Library/PreferenceBundles/OpenMinisJBPrefs.bundle/OpenMinisJBPrefs`
+后重开“设置”。
+
+## 可选：本机网页控制台
+
+除了原生设置面板，bridge 还自带一个可选的网页控制台：
 
 - 在对话里调用 `jb_ui_url`，打开返回的一次性链接（120 秒有效，只能用一次）；
 - 或在设备浏览器打开 `http://127.0.0.1:18765/ui`，粘贴 token。
@@ -140,7 +158,7 @@ python3 test_upgrade.py     # 模拟完整 dpkg 序列
 
 ## 状态
 
-`0.3.14-1+experimental`（bridge `0.3.12`，API `3`）。核心能力均真机验证：安装/卸载/重装/原地升级/
+`0.3.14-8+experimental`（bridge `0.3.12`，API `3`）。核心能力均真机验证：安装/卸载/重装/原地升级/
 中断恢复/一键回退/自更新/坏版本回退/重启重越狱恢复/压力边界。仅 EXDEV 跨卷回退未真机触发。
 
 **已知限制**：递归删除非原子（>10000 条目须分片）；`jb_exec` 子进程每文件 256 KiB 上限、

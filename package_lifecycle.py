@@ -23,7 +23,7 @@ PREVIOUS = Path('/usr/local/lib/openminis-jb-previous')
 PREV_SCHEMA = 'openminis-jb-previous-1'
 PREV_EXEC = '/usr/local/bin/openminis-jb-restore-runtime'
 RECEIPT = STORE / '.clean-install-v032'
-VERSION = '0.3.14-1+experimental'
+VERSION = '0.3.14-8+experimental'
 RECEIPT_DATA = ('OpenMinis-Jailbreak clean-install ' + VERSION + '\n').encode()
 RECEIPT_PREFIX = b'OpenMinis-Jailbreak clean-install '
 SCHEMA = 'openminis-jb-upgrade-1'
@@ -1334,7 +1334,27 @@ def upgrade_activate(r, meta=None):
     print('OpenMinis-Jailbreak: upgraded in place (' + str(meta['label'] if meta else 'no-snapshot') + ' -> ' +
           VERSION + '); token, config and audit preserved; UID501 API3 service healthy')
 
+def sign_prefs_bundle():
+    """Best effort: give the Settings bundle an ad-hoc signature with ldid.
+
+    The build already embeds one, but some jailbreak setups only accept ldid's
+    output. A failure never blocks the service install; the pane just may not
+    appear until it is re-signed manually.
+    """
+    bundle = Path('/Library/PreferenceBundles/OpenMinisJBPrefs.bundle/OpenMinisJBPrefs')
+    ldid = Path('/usr/bin/ldid')
+    if not (bundle.is_file() and ldid.is_file()):
+        return
+    result = run([str(ldid), '-S', str(bundle)], timeout=20)
+    if result.returncode:
+        print('WARNING: could not re-sign the Settings bundle; keeping the build signature',
+              file=sys.stderr)
+
 def postinst_configure():
+    try: sign_prefs_bundle()
+    except Exception:
+        print('WARNING: Settings bundle signing skipped; keeping the build signature',
+              file=sys.stderr)
     r = preflight()
     if os.path.lexists(TRANSACTION):
         meta = transaction_meta()
