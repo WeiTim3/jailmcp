@@ -1,107 +1,98 @@
-# OpenMinis-Jailbreak
+# JailMCP
 
-给 [OpenMinis](https://openminis.app) 增加越狱侧能力的本地服务包：以 launchd 服务形式运行，
-作为 MCP 服务器把工具暴露在 `127.0.0.1` 上。**OpenMinis 本体不需越狱、不注入、不改签名**，
-只做一件普通事：连本机回环端口。
+**JailMCP — Jailbroken iOS as an MCP endpoint.**
 
-```
-OpenMinis（普通沙盒 App）
-    │  http://127.0.0.1:18765/mcp  + Bearer 认证
-    ▼
-launchd → 监督器（root 所有，mobile 身份）→ bridge.py（UID 501）
-    ├── 文件读/写/编辑/搜索/上传
-    ├── 执行 mobile 命令
-    └── 自身更新与回退
-```
+[中文说明](README.zh-CN.md)
 
-## 环境要求
+JailMCP is a client-neutral **MCP server for jailbroken iOS**. It exposes the
+phone's local capabilities over an authenticated loopback endpoint:
 
-- Dopamine Roothide（rootless）越狱，iOS 16.x（实测 iPhone15,3 / iOS 16.4.1）
-- 越狱侧 Python 3.9
+- files and project roots
+- sandbox-free mobile shell
+- process and device status
+- Frida: process list, spawn/attach, ObjC hooks, long-lived sessions and logs
+- audit and structured errors
 
-## 安装
+Minis is one supported MCP client, not the owner of the project. Any MCP client
+that can reach `127.0.0.1` can use it.
 
-1. 从 [Release](https://github.com/WeiTim3/openminis-jailbreak/releases) 下载 `.deb`，用 Filza 或 Sileo 安装；
-2. 在 OpenMinis 里添加 MCP 服务器：
+## Status
 
-| 字段 | 值 |
+The project is in a staged rename from **OpenMinis-Jailbreak** to **JailMCP**.
+
+| Layer | 0.4.0 state |
 |---|---|
-| 名称 | `openminis-jb` |
-| 传输 | HTTP |
-| URL | `http://127.0.0.1:18765/mcp` |
-| 请求头 | `Authorization: Bearer <本机 token>` |
+| Brand / repository | JailMCP / `jailmcp` |
+| Current runtime package | `0.3.13-2+experimental` |
+| Bridge version | `0.3.11` |
+| Package ID | still `app.openminis.jailbreak` |
+| MCP tools | 37, including native `jb_frida_*` |
+| MCP endpoint | `http://127.0.0.1:18765/mcp` |
 
-token 位于设备上（私密数据，勿分享）：
+The package ID, launchd label, state directory and tool names are intentionally
+unchanged in 0.4.0 so existing installs keep upgrading and keep their token.
+The new `dev.jailmcp.bridge` package lands in 0.5.0.
 
-```
-/var/mobile/Documents/OpenMinis-Jailbreak/.bridge-state/token
-```
+## Naming
 
-安装后无需重启；卸载后可直接重装，**不必 purge**。
-
-## 工具（26 个）
-
-- **信息**：`jb_device_info`、`jb_process_list`、`jb_maintenance_info`、`jb_projects`
-- **文件**：`jb_read_file`、`jb_write_file`、`jb_edit_file`、`jb_list_dir`、`jb_stat`、
-  `jb_mkdir`、`jb_delete`、`jb_rename`、`jb_search`、`jb_read_chunk`、`jb_write_chunk`
-- **真实文件系统**：`jb_find`（用设备路径搜整机，自动落系统目录；可按**名字/内容**搜、按**大小**过滤，
-  返回权限/属主/mtime；只读、有界）
-- **上传**：`jb_upload_begin` / `jb_upload_chunk` / `jb_upload_commit` / `jb_upload_abort`（原子就位）
-- **执行**：`jb_exec`、`jb_restart`
-- **更新**：`jb_stage_update`、`jb_validate_update`、`jb_apply_update`、`jb_rollback`
-
-## 路径约定：系统目录优先，越狱目录次之
-
-在 roothide 设备上，**同一个路径前缀下有两棵不同的树**：
-
-| 名称 | 路径 | 是什么 |
-|---|---|---|
-| **系统目录**（第一） | `/rootfs/private/var/mobile/…` | iOS 真实数据卷 |
-| **越狱目录**（第二） | `/var/mobile/…` → `/rootfs/private/var/mobile/Containers/Shared/AppGroup/.jbroot-<id>/var/mobile/…` | roothide 的 jbroot |
-
-两者**前缀相同但不是同一目录**（越狱目录嵌套在系统目录的 `Containers/Shared/AppGroup/.jbroot-*/` 下）。
-**约定：查找、读取、写入一律以系统目录为先，越狱目录为次。**
-`/System/...` 同理 —— 真实系统文件在 `/rootfs/System/...`（如字体 `/rootfs/System/Library/Fonts`）。
-
-- `jb_find` 直接写**设备路径**即可，会自动落到系统目录：
-  `/var/mobile/Documents` → `/rootfs/private/var/mobile/Documents`、
-  `/System/Library/Fonts` → `/rootfs/System/Library/Fonts`；
-  已经是 `/rootfs/…` 的原样使用；加 `jailbreak=true` 则改搜**越狱目录**。
-- `jb_maintenance_info` 的 `paths` 字段直接给出这两条根路径（`prefer: "system"`）。
-- 文件类工具（`jb_read_file` 等）仍限在项目根内；读其它文件用 `jb_find` 定位后配 `jb_exec`。
-
-## 安全边界（务必阅读）
-
-- `jb_exec` 是 **mobile 权限任意 Shell，不是沙箱**，能访问 mobile 有权访问的一切。
-- 本包**不提供 root helper、不做免密 sudo**；需 root 时由你在越狱终端手动执行。
-- 文件工具只能访问项目根 `/var/mobile/Documents/OpenMinis-Jailbreak`；`.bridge-state` 与 `..` 不可达。
-- 只绑回环 + Bearer 认证；升级只认**白名单**内已知良好版本，先校验后改动；token 永不读取/打印/上传。
-
-## 升级与回退
-
-- **原地升级**：Sileo 直接更新，token/config/audit 保留，无需重配 MCP。
-- **中断自动恢复**：dpkg 解包失败时自动从同 boot 快照还原，绝不卡住 dpkg。
-- **一键回退**：`sudo /usr/local/bin/openminis-jb-restore-runtime [--dry-run]`
-  （恢复上一份运行时；dpkg 仍记新版本号，装旧 .deb 不推荐）。
-
-## 构建与测试
-
-```sh
-python3 build.py            # 生成 .deb（可复现：两次构建字节一致）
-python3 test_package.py test_api.py
-python3 test_supervisor.py  # 真实子进程
-python3 test_upgrade.py     # 模拟完整 dpkg 序列
+```text
+Brand          JailMCP
+Chinese        越狱 MCP
+Repository     jailmcp
+Daemon         jailmcpd
+CLI            jailmcp
+MCP server     jailmcp
+Tools          jb_*        (jb = jailbreak, kept permanently)
+Package        dev.jailmcp.bridge       (0.5.0)
+Frida package  dev.jailmcp.frida-cli   (0.5.0)
+State          .jailmcp                (0.5.0)
 ```
 
-233 项测试全过（见 `TEST_REPORT_0381.txt`）。
+See [NAMING.md](NAMING.md) for the full naming and migration table.
 
-## 状态
+## Native Frida tools
 
-`0.3.8-1+experimental`（bridge `0.3.6`，API `3`）。核心能力均真机验证：安装/卸载/重装/原地升级/
-中断恢复/一键回退/自更新/坏版本回退/重启重越狱恢复/压力边界。仅 EXDEV 跨卷回退未真机触发。
+JailMCP currently exposes:
 
-**已知限制**：递归删除非原子（>10000 条目须分片）；`jb_exec` 子进程每文件 256 KiB 上限；
-状态文件须 0600。
-（分块写入/上传的整文件哈希只在该块 `final=true` 或显式 `want_sha256=true` 时计算，多块写入为线性成本。）
+```text
+jb_frida_ps
+jb_frida_run
+jb_frida_start
+jb_frida_logs
+jb_frida_stop
+jb_frida_sessions
+```
 
-实验性项目，请自行评估风险后安装。
+`jb_frida_start` returns a session id and a log path. `jb_frida_logs` reads new
+output by offset; `jb_frida_stop` terminates the client session.
+
+Spawn requires an unlocked device. The Frida server itself is a root service
+bound to `127.0.0.1:27042`; the client runs as `mobile`.
+
+## Security model
+
+- only loopback (`127.0.0.1`)
+- bearer token, mode 0600
+- `allow_mobile_shell` is the master switch for shell/Frida execution
+- no root helper inside the bridge
+- Frida server is the only root component
+- do not bind Frida or MCP to `0.0.0.0`
+
+## Roadmap
+
+```text
+0.4.0  brand: JailMCP, repository, docs, MCP server name
+       package IDs / paths / tools unchanged
+
+0.5.0  dev.jailmcp.bridge + dev.jailmcp.frida-cli
+       .jailmcp state directory
+       migration from old package and paths
+
+1.0.0  remove the legacy package name
+       jb_* tool names remain permanent
+```
+
+## Legacy documentation
+
+The previous README is preserved at [docs/legacy-0.3.12.md](docs/legacy-0.3.12.md).
+
