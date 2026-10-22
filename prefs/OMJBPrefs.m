@@ -23,8 +23,10 @@ static void OMJBTrace(NSString *format, ...) {
     va_start(args, format);
     NSString *line = [[NSString alloc] initWithFormat:format arguments:args];
     va_end(args);
-    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"prefs-trace.log"];
-    if (path.length) {
+    NSArray *paths = @[@"/var/mobile/Documents/OpenMinis-Jailbreak/prefs-trace.log",
+                       [NSTemporaryDirectory() stringByAppendingPathComponent:@"prefs-trace.log"] ?: @""];
+    for (NSString *path in paths) {
+        if (path.length == 0) continue;
         FILE *file = fopen([path fileSystemRepresentation], "a");
         if (file) { fprintf(file, "%s\n", [line UTF8String]); fclose(file); }
     }

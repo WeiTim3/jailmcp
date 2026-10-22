@@ -24,7 +24,7 @@ PREVIOUS = Path('/usr/local/lib/openminis-jb-previous')
 PREV_SCHEMA = 'openminis-jb-previous-1'
 PREV_EXEC = '/usr/local/bin/openminis-jb-restore-runtime'
 RECEIPT = STORE / '.clean-install-v032'
-VERSION = '0.3.14-20+experimental'
+VERSION = '0.3.14-21+experimental'
 RECEIPT_DATA = ('OpenMinis-Jailbreak clean-install ' + VERSION + '\n').encode()
 RECEIPT_PREFIX = b'OpenMinis-Jailbreak clean-install '
 SCHEMA = 'openminis-jb-upgrade-1'
@@ -1360,6 +1360,11 @@ def postinst_configure():
     except Exception:
         print('WARNING: Settings bundle signing skipped; keeping the build signature',
               file=sys.stderr)
+    # Settings caches the loaded bundle for the life of the process. Restart it
+    # after replacing the pane, otherwise the next tap reuses the old class.
+    try: subprocess.run(['killall', 'Preferences'], stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL, timeout=5)
+    except Exception: pass
     r = preflight()
     if os.path.lexists(TRANSACTION):
         meta = transaction_meta()
