@@ -60,13 +60,16 @@ Description: OpenMinis-Jailbreak local API3 mobile service (experimental)
     docs=STAGE/'usr/share/doc/app.openminis.jailbreak'; docs.mkdir(parents=True); (docs/'README.zh-CN.md').write_text((HERE/'README.zh-CN.md').read_text()); (docs/'source-hashes.json').write_text(json.dumps(hashes,sort_keys=True,indent=2)+'\n')
     md5=[]
     for p in sorted(STAGE.rglob('*')):
+        if p.is_symlink():
+            continue
         if p.is_dir(): p.chmod(0o755)
         elif p.parent==control: pass
         elif p==binary or (p.parent.name=='OpenMinisJBPrefs.bundle' and p.name=='OpenMinisJBPrefs'):
             p.chmod(0o755); md5.append(hashlib.md5(p.read_bytes()).hexdigest()+'  '+str(p.relative_to(STAGE)))
         else: p.chmod(0o644); md5.append(hashlib.md5(p.read_bytes()).hexdigest()+'  '+str(p.relative_to(STAGE)))
     (control/'md5sums').write_text('\n'.join(md5)+'\n')
-    for p in STAGE.rglob('*'): os.utime(p,(int(EPOCH),int(EPOCH)))
+    for p in STAGE.rglob('*'):
+        if not p.is_symlink(): os.utime(p,(int(EPOCH),int(EPOCH)))
     os.utime(STAGE,(int(EPOCH),int(EPOCH)))
     subprocess.run(['dpkg-deb','--root-owner-group','-Zgzip','-z9','--build',str(STAGE),str(OUT)],check=True,env=dict(os.environ,SOURCE_DATE_EPOCH=EPOCH))
     sha=hashlib.sha256(OUT.read_bytes()).hexdigest(); (HERE/'SHA256SUMS').write_text(sha+'  '+OUT.name+'\n'); print(sha+'  '+OUT.name)
