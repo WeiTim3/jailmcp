@@ -16,7 +16,7 @@ import time
 STATE = Path('/var/mobile/Documents/OpenMinis-Jailbreak/.bridge-state')
 STORE = Path('/usr/local/lib/openminis-jb')
 PORT = 18765
-MAX_FILE = 131072
+MAX_FILE = 262144
 LOCK = threading.RLock()
 PROCESS_LOCK = threading.Lock()
 PROCESSES = set()

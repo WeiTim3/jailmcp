@@ -1,7 +1,7 @@
 # 项目评审（2026-10）
 
 评审对象：`0.3.12`（bridge `0.3.10`）。本文件保留当时的问题清单与优先级；
-已在 `0.3.13`（bridge `0.3.11`）修掉的条目在标题后标注 **已修**。
+已在 `0.3.14`（bridge `0.3.12`）修掉的条目在标题后标注 **已修**。
 
 ## P0
 
@@ -15,7 +15,7 @@
    返回 `{"error":{"code","message","ref"}}`；异常写入私有 `log-v030.jsonl`；
    新增 `jb_log_tail`；认证失败按 10 秒节流记录。
 4. **发布链滞后** — 部分修。
-   唯一 tag/Release 仍是 `v0.3.8-1`，当前代码是 `0.3.13-2`；
+   唯一 tag/Release 仍是 `v0.3.8-1`，当前代码是 `0.3.14-1`；
    Release 只有 `.deb`，没有 `SHA256SUMS` 与源码包；release job 重建而不是复用测试产物。
    CI 已改为上传/复用同一份产物并附带校验和；**仍需人工打 tag 并发布**。
 5. **CI 漏跑 `test_filetools.py` 与 `test_upgrade.py`，且未在 Python 3.9 验证** — **已修**：
@@ -24,6 +24,15 @@
    `allow_mobile_shell` 安装时仍为 `true`（保持兼容），但 README 明确说明如何关闭；
    `jb_find` 整机读取能力与 token 的同 UID 可读性已写入安全边界。
    仍未做：`protected_paths` denylist、`RLIMIT_NPROC/AS/CPU`、默认关闭 shell。
+
+## 0.3.14 新增：本机控制台
+
+`GET /ui` 是一个内嵌的单页设置面板：状态、版本、supervisor、可回退版本、项目根、
+错误日志，以及重启/回退、Shell 开关、项目根增删。`jb_ui_url` 产生一次性 120 秒
+ticket，换 `HttpOnly` 8 小时会话 cookie；配置写入走 `/ui/api/config`，不新增 MCP
+工具。它**不是** OpenMinis 宿主 App 的 Settings 原生页；宿主 App 不能注入。
+iOS 系统设置里的原生面板需要单独的 PreferenceLoader bundle（Theos/SDK 编译），
+仍未包含。
 
 ## P1
 

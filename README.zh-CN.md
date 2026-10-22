@@ -1,11 +1,31 @@
-# OpenMinis-Jailbreak 0.3.13-2+experimental
+# OpenMinis-Jailbreak 0.3.14-1+experimental
 
 以 launchd 服务形式运行、通过本机 MCP 向 OpenMinis 提供越狱侧能力的服务包。
 OpenMinis 本体不需要越狱权限、不需要注入、不需要改签名。
 
 完整说明见项目自述文件；本文档随包安装，只记录版本相关信息。
 
-## 本版改动（0.3.13）
+## 本版改动（0.3.14）
+
+bridge 版本提升到 `0.3.12`：新增**本机控制台**，并把它做进包里。
+
+- `GET /ui`：一个自包含的设置面板（HTML/CSS/JS 全部内嵌，无外部资源），
+  显示桥状态、版本、PID、supervisor、可回退版本、项目根、错误日志；
+  可以切换 mobile Shell、增删项目根、重启服务、回退上一版。
+- `jb_ui_url`（第 32 个工具）：返回一个**一次性、120 秒有效**的链接。
+  ticket 放在 URL fragment 里，不会被服务端记录；页面用它换一个
+  `HttpOnly; SameSite=Strict` 的 8 小时会话 cookie。也可以直接打开
+  `http://127.0.0.1:18765/ui` 并粘贴 token。
+- 会话是 **HMAC 无状态 cookie**（以 token 为密钥），bridge 重启后仍然有效；
+  token 轮换后自动失效。控制台的配置写入只走 `/ui/api/config`，不是 MCP 工具，
+  因此不会扩大 agent 能调用的工具面。
+- 新增的 `Origin` 允许列表只放行 `http://127.0.0.1:<port>` 与
+  `http://localhost:<port>`，其他来源仍然 403。
+
+打包白名单补上 `0.3.13-2` 的运行库集合，因此这台设备可以从 0.3.13-2
+原地升到 0.3.14；同时保留 0.3.12 的集合，旧设备也能升级。
+
+## 历史（0.3.13）
 
 > `0.3.13-2` 是打包修订：补上 `0.3.12-1` 的运行库白名单条目。`0.3.13-1` 会在
 > `upgrade-runtime-allowlist` 阶段拒绝从 0.3.12 升级（bridge 仍是 `0.3.11`，功能相同）。

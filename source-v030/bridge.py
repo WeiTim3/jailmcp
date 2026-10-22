@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 import maintenance_runtime as rt
 
-VERSION = '0.3.11'
+VERSION = '0.3.12'
 # One full 262144-byte chunk is ~349528 base64 characters; the transport limit
 # must cover that plus the JSON envelope so jb_write_chunk can accept MAX_CHUNK.
 MAX_BODY = 400000
@@ -136,11 +136,14 @@ tool('jb_readlink', 'Read the target string of one symlink without following it.
 tool('jb_log_tail', 'Newest bounded slice of the local error log: time, tool name, error code and exception text only (never arguments or file contents). Read-only.',
      {'limit': {'type': 'integer', 'minimum': 1, 'maximum': 200},
       'max_bytes': {'type': 'integer', 'minimum': 1024, 'maximum': 65536}}, ())
+tool('jb_ui_url', 'Return a short-lived, one-time URL for the local control panel. The ticket travels in the URL fragment, is exchanged once for an HttpOnly session cookie, and expires in 120 seconds. Open it on the device.', {}, ())
 
 SPEC = {x['name']: x['inputSchema'] for x in TOOLS}
 
 def decode(value):
-    if not isinstance(value, str) or len(value) > 174764: raise ValueError('Oversized base64')
+    # 262144 bytes of base64 plus padding (MAX_FILE); keep this in step with
+    # maintenance_runtime.MAX_FILE and the 400000-byte transport limit.
+    if not isinstance(value, str) or len(value) > 349528: raise ValueError('Oversized base64')
     data = base64.b64decode(value, validate=True)
     if len(data) > rt.MAX_FILE: raise ValueError('Oversized file')
     return data
@@ -166,6 +169,590 @@ def enqueue(target):
     defer_exit()
     return {'queued': True, 'target_sha256': target, 'healthcheck_required': True, 'reconnect_after_seconds': 3}
 
+
+UI_TICKET_SECONDS = 120          # one-time control-panel link lifetime
+UI_SESSION_SECONDS = 28800       # HttpOnly cookie lifetime (8 hours)
+UI_MAX_TICKETS = 8               # bounded in-memory ticket store
+UI_LOGIN_BODY = 4096             # /ui/session request body
+UI_CONFIG_BODY = 65536           # /ui/api/config request body
+UI_TICKETS = {}
+UI_LOCK = threading.Lock()
+
+# The control panel is embedded so the bridge hash covers it and a staged
+# self-update cannot leave the UI out of sync with the API.
+UI_HTML = r"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0a84ff">
+<title>OpenMinis JB 控制台</title>
+<style>
+:root{
+  --bg:#f2f2f7;--card:#fff;--text:#1c1c1e;--muted:#6c6c70;--line:#e3e3e8;
+  --accent:#0a84ff;--green:#34c759;--red:#ff3b30;--orange:#ff9f0a;
+  --shadow:0 1px 2px rgba(0,0,0,.04),0 8px 24px rgba(0,0,0,.04);
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#000;--card:#1c1c1e;--text:#f2f2f7;--muted:#8e8e93;--line:#2c2c2e;
+        --accent:#0a84ff;--green:#30d158;--red:#ff453a;--orange:#ffd60a;
+        --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25);}
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--text)}
+body{font:16px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif;
+     padding:calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 28px)}
+.bar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:4px 2px 16px}
+.bar h1{font-size:26px;line-height:1.1;margin:0;letter-spacing:-.02em}
+.bar p{margin:4px 0 0;color:var(--muted);font-size:13px}
+.icon{width:38px;height:38px;border-radius:50%;border:1px solid var(--line);background:var(--card);
+      color:var(--text);font-size:19px;line-height:1;box-shadow:var(--shadow)}
+.icon:active{transform:scale(.94)}
+.card{background:var(--card);border-radius:18px;padding:16px;margin:0 0 14px;box-shadow:var(--shadow)}
+.card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 12px}
+.cardhead{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.hero{padding:18px 16px}
+.statusline{display:flex;align-items:center;gap:8px;margin-bottom:14px}
+.statusline strong{font-size:17px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--muted);box-shadow:0 0 0 4px color-mix(in srgb,var(--muted) 18%,transparent)}
+.dot.ok{background:var(--green);box-shadow:0 0 0 4px color-mix(in srgb,var(--green) 18%,transparent)}
+.dot.bad{background:var(--red);box-shadow:0 0 0 4px color-mix(in srgb,var(--red) 18%,transparent)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 14px}
+.grid div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.label{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.grid span:last-child{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hash{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:3px}
+.hash code{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);word-break:break-all}
+.muted{color:var(--muted)}
+.actions{display:flex;gap:10px;flex-wrap:wrap}
+.btn{appearance:none;border:1px solid var(--line);background:var(--card);color:var(--text);
+     border-radius:12px;padding:10px 16px;font:inherit;font-weight:600;flex:1;min-width:132px}
+.btn:active{transform:scale(.98)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.danger{color:var(--red)}
+.btn.small{flex:0 0 auto;min-width:0;padding:9px 14px;font-size:14px}
+.btn:disabled{opacity:.4;transform:none}
+.hint{font-size:12px;color:var(--muted);margin:10px 0 0}
+.row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 0;border-top:1px solid var(--line)}
+.row:first-of-type{border-top:none;padding-top:0}
+.row span{display:flex;flex-direction:column;gap:2px}
+.row small{font-size:12px;color:var(--muted);font-weight:400}
+.switchrow{cursor:pointer}
+.switchrow input{position:absolute;opacity:0;pointer-events:none}
+.switch{position:relative;width:50px;height:30px;border-radius:999px;background:var(--line);flex:0 0 auto;transition:background .18s}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:#fff;
+               box-shadow:0 1px 3px rgba(0,0,0,.25);transition:transform .18s}
+input:checked+.switch{background:var(--green)}
+input:checked+.switch::after{transform:translateX(20px)}
+.list{list-style:none;margin:0;padding:0}
+.list li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-top:1px solid var(--line)}
+.list li div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.list li strong{font-size:15px}
+.list li code{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);word-break:break-all}
+.remove{border:0;background:transparent;color:var(--red);font:inherit;font-size:14px;padding:6px}
+.addform{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.addform input{flex:1 1 120px;min-width:0;background:var(--bg);border:1px solid var(--line);color:var(--text);
+               border-radius:10px;padding:10px 12px;font:inherit;font-size:14px}
+.addform input::placeholder{color:var(--muted)}
+.link{border:0;background:transparent;color:var(--accent);font:inherit;font-size:14px;padding:4px}
+.log{font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--bg);border-radius:12px;
+     padding:12px;margin:0;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word;color:var(--muted)}
+.note p{margin:0 0 8px;font-size:14px;color:var(--muted)}
+.note p:last-child{margin-bottom:0}
+.note code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text);word-break:break-all}
+.foot{text-align:center;color:var(--muted);font-size:12px;margin-top:8px}
+.login{max-width:520px;margin:8vh auto 0}
+.login h2{font-size:22px;text-transform:none;letter-spacing:-.01em;color:var(--text);margin:0 0 8px}
+.login p{margin:0 0 12px;font-size:14px}
+.login input{width:100%;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:12px;
+             padding:14px;font:16px ui-monospace,SFMono-Regular,Menlo,monospace;margin:6px 0 12px}
+.login .btn.wide{width:100%;flex:none}
+.error{color:var(--red);font-size:13px;min-height:18px;margin:8px 0 0}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:24px;z-index:20}
+.modal[hidden]{display:none}
+.modalcard{background:var(--card);border-radius:18px;padding:18px;width:100%;max-width:340px;box-shadow:0 20px 60px rgba(0,0,0,.35)}
+.modalcard p{margin:0 0 16px;font-size:15px;line-height:1.45}
+.modalcard .actions{display:flex;gap:10px}
+.toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 22px);transform:translateX(-50%);
+       background:#1c1c1e;color:#fff;padding:10px 16px;border-radius:999px;font-size:14px;max-width:86vw;
+       box-shadow:0 8px 30px rgba(0,0,0,.3);z-index:9}
+.toast.bad{background:var(--red)}
+@media (min-width:700px){body{max-width:720px;margin:0 auto}.grid{grid-template-columns:repeat(4,1fr)}}
+</style>
+</head>
+<body>
+<header class="bar">
+  <div><h1>OpenMinis JB</h1><p id="sub">本机越狱桥 · 127.0.0.1</p></div>
+  <button class="icon" id="refresh" title="刷新" aria-label="刷新">↻</button>
+</header>
+
+<main id="app" hidden>
+  <section class="hero card">
+    <div class="statusline"><span id="dot" class="dot"></span><strong id="health">检查中</strong><span id="event" class="muted"></span></div>
+    <div class="grid">
+      <div><span class="label">bridge</span><span id="version">—</span></div>
+      <div><span class="label">API</span><span id="api">—</span></div>
+      <div><span class="label">PID / UID</span><span id="pid">—</span></div>
+      <div><span class="label">supervisor</span><span id="supervisor">—</span></div>
+    </div>
+    <div class="hash"><span class="label">source sha256</span><code id="hash">—</code></div>
+  </section>
+
+  <section class="card">
+    <div class="cardhead"><h2>操作</h2></div>
+    <div class="actions">
+      <button class="btn" id="restart">重启服务</button>
+      <button class="btn danger" id="rollback">回退上一版</button>
+    </div>
+    <p class="hint" id="rollbackHint"></p>
+  </section>
+
+  <section class="card">
+    <div class="cardhead"><h2>能力</h2></div>
+    <label class="row switchrow">
+      <span><strong>mobile Shell</strong><small>jb_exec · 非沙箱，等同 mobile 权限</small></span>
+      <input type="checkbox" id="shell"><span class="switch"></span>
+    </label>
+    <div class="row"><span><strong>项目根</strong><small>文件工具只能访问这些目录</small></span><span id="projectCount" class="muted"></span></div>
+    <ul id="projects" class="list"></ul>
+    <form id="addProject" class="addform">
+      <input id="pname" placeholder="名称" maxlength="32" autocomplete="off" autocapitalize="off">
+      <input id="ppath" placeholder="/var/mobile/…" autocomplete="off" autocapitalize="off">
+      <button class="btn small" type="submit">添加</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="cardhead"><h2>错误日志</h2><button class="link" id="logRefresh">刷新</button></div>
+    <pre id="log" class="log">—</pre>
+  </section>
+
+  <section class="card note">
+    <h2>安全边界</h2>
+    <p>只监听 <code>127.0.0.1</code>，会话 cookie 为 HttpOnly，8 小时后失效。Shell 与整机读取都以 mobile 身份运行，<strong>不是沙箱</strong>。</p>
+    <p>token：<code>/var/mobile/Documents/OpenMinis-Jailbreak/.bridge-state/token</code></p>
+  </section>
+  <footer class="foot">OpenMinis-Jailbreak · 本地控制台</footer>
+</main>
+
+<section id="login" class="login" hidden>
+  <div class="card">
+    <h2>连接到本机桥</h2>
+    <p class="muted">输入设备上的 bridge token。它只用于建立 HttpOnly 会话，页面不会保存它。</p>
+    <input id="token" type="password" placeholder="64 位 token" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <button class="btn wide primary" id="loginBtn">进入</button>
+    <p id="loginMsg" class="error"></p>
+    <p class="hint">token 位于 <code>.bridge-state/token</code>，属主 mobile、权限 0600，可用 Filza 查看。</p>
+  </div>
+</section>
+
+<div id="modal" class="modal" hidden>
+  <div class="modalcard">
+    <p id="modalText"></p>
+    <div class="actions">
+      <button class="btn" id="modalCancel" type="button">取消</button>
+      <button class="btn danger" id="modalOk" type="button">确认</button>
+    </div>
+  </div>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script>
+'use strict';
+const $ = (s) => document.querySelector(s);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let dev = null, info = null, cfg = null, busy = false, toastTimer = 0;
+
+function toast(text, bad) {
+  const t = $('#toast');
+  t.textContent = text;
+  t.className = 'toast' + (bad ? ' bad' : '');
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 2800);
+}
+
+function ask(text, okLabel, danger) {
+  return new Promise((resolve) => {
+    const modal = $('#modal');
+    const ok = $('#modalOk');
+    const cancel = $('#modalCancel');
+    $('#modalText').textContent = text;
+    ok.textContent = okLabel || '确认';
+    ok.className = 'btn ' + (danger ? 'danger' : 'primary');
+    modal.hidden = false;
+    const done = (value) => {
+      modal.hidden = true;
+      ok.onclick = null;
+      cancel.onclick = null;
+      resolve(value);
+    };
+    ok.onclick = () => done(true);
+    cancel.onclick = () => done(false);
+  });
+}
+
+function setHealth(ok, text, event) {
+  const dot = $('#dot');
+  dot.className = 'dot ' + (ok ? 'ok' : 'bad');
+  $('#health').textContent = text;
+  $('#event').textContent = event || '';
+}
+
+async function rpc(name, args) {
+  const r = await fetch('/mcp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method: 'tools/call',
+                           params: { name: name, arguments: args || {} } })
+  });
+  if (r.status === 401) {
+    const e = new Error('unauthorized'); e.unauthorized = true; throw e;
+  }
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const data = await r.json();
+  if (data.error) throw new Error(data.error.message || '请求失败');
+  const result = data.result;
+  if (!result) throw new Error('空响应');
+  if (result.isError) {
+    let payload = null;
+    try { payload = JSON.parse(result.content[0].text); } catch (e) {}
+    const err = new Error((payload && payload.error && payload.error.message) || '操作失败');
+    if (payload && payload.error) { err.code = payload.error.code; err.ref = payload.error.ref; }
+    throw err;
+  }
+  return JSON.parse(result.content[0].text);
+}
+
+async function getConfig() {
+  const r = await fetch('/ui/api/config');
+  if (r.status === 401) { const e = new Error('unauthorized'); e.unauthorized = true; throw e; }
+  if (!r.ok) throw new Error('读取配置失败 (' + r.status + ')');
+  return r.json();
+}
+
+async function setConfig(patch) {
+  const r = await fetch('/ui/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch)
+  });
+  if (r.status === 401) { const e = new Error('unauthorized'); e.unauthorized = true; throw e; }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error((data.error && data.error.message) || '保存失败 (' + r.status + ')');
+  return data;
+}
+
+function showLogin(message) {
+  $('#app').hidden = true;
+  $('#login').hidden = false;
+  $('#loginMsg').textContent = message || '';
+  setTimeout(() => $('#token').focus(), 80);
+}
+
+function showApp() {
+  $('#login').hidden = true;
+  $('#app').hidden = false;
+}
+
+function renderStatus() {
+  const sup = info.supervisor || {};
+  const ok = info.supervised === true && sup.event === 'healthy';
+  setHealth(ok, ok ? '运行中' : '异常', sup.event ? ('· ' + sup.event) : '');
+  $('#version').textContent = dev.bridge || '—';
+  $('#api').textContent = info.api != null ? ('v' + info.api) : '—';
+  $('#pid').textContent = (dev.pid != null ? dev.pid : '—') + ' / ' + (dev.uid != null ? dev.uid : '—');
+  $('#supervisor').textContent = sup.supervisor_pid != null ? String(sup.supervisor_pid) : '—';
+  $('#hash').textContent = dev.source_sha256 || '—';
+  $('#hash').title = dev.source_sha256 || '';
+  $('#sub').textContent = 'iOS ' + ((dev.ios && dev.ios.version) || '?') +
+                          ' · ' + (dev.machine || '本机越狱桥');
+  const prev = info.active && info.active.previous;
+  const button = $('#rollback');
+  button.disabled = !prev;
+  $('#rollbackHint').textContent = prev
+    ? '可回退到 ' + prev.slice(0, 12) + '…（当前版本仍保留）'
+    : '没有可回退的上一版';
+}
+
+function renderConfig() {
+  $('#shell').checked = cfg.allow_mobile_shell === true;
+  const entries = Object.entries(cfg.projects || {});
+  $('#projectCount').textContent = entries.length + ' 个';
+  const list = $('#projects');
+  list.textContent = '';
+  for (const [name, path] of entries) {
+    const li = document.createElement('li');
+    const box = document.createElement('div');
+    const strong = document.createElement('strong');
+    strong.textContent = name;
+    const code = document.createElement('code');
+    code.textContent = path;
+    box.append(strong, code);
+    const remove = document.createElement('button');
+    remove.className = 'remove';
+    remove.type = 'button';
+    remove.textContent = '移除';
+    remove.onclick = () => removeProject(name);
+    li.append(box, remove);
+    list.append(li);
+  }
+}
+
+function renderLog(result) {
+  const pre = $('#log');
+  pre.textContent = result && result.text ? result.text : '（暂无记录）';
+  pre.scrollTop = pre.scrollHeight;
+}
+
+async function load(showError) {
+  if (busy) return;
+  busy = true;
+  $('#refresh').disabled = true;
+  try {
+    const values = await Promise.all([rpc('jb_device_info'), rpc('jb_maintenance_info'), getConfig()]);
+    dev = values[0]; info = values[1]; cfg = values[2];
+    renderStatus();
+    renderConfig();
+    try { renderLog(await rpc('jb_log_tail', { limit: 20 })); } catch (e) {}
+  } catch (e) {
+    if (e.unauthorized) {
+      showLogin('会话已过期，请重新输入 token');
+    } else {
+      setHealth(false, '无法连接', '');
+      if (showError !== false) toast(e.message || '加载失败', true);
+    }
+  } finally {
+    busy = false;
+    $('#refresh').disabled = false;
+  }
+}
+
+async function removeProject(name) {
+  if (!await ask('移除项目根“' + name + '”？只改配置，不删除文件。', '移除', true)) return;
+  const projects = Object.assign({}, cfg.projects);
+  delete projects[name];
+  try {
+    cfg = await setConfig({ projects: projects });
+    renderConfig();
+    toast('已移除 ' + name);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function restartService() {
+  if (!await ask('重启 bridge？连接会短暂中断，随后自动恢复。', '重启', false)) return;
+  const oldPid = dev ? dev.pid : null;
+  try { await rpc('jb_restart'); } catch (e) { toast(e.message, true); return; }
+  toast('正在重启…');
+  for (let i = 0; i < 25; i++) {
+    await sleep(1000);
+    try {
+      const d = await rpc('jb_device_info');
+      if (oldPid == null || d.pid !== oldPid) { toast('已恢复'); await load(false); return; }
+    } catch (e) {}
+  }
+  toast('20 秒内未恢复，请检查 supervisor', true);
+}
+
+async function rollbackService() {
+  const prev = info && info.active && info.active.previous;
+  if (!prev) return;
+  if (!await ask('回退到 ' + prev.slice(0, 12) + '…？当前版本会保留，可再次回退。', '回退', true)) return;
+  try { await rpc('jb_rollback'); } catch (e) { toast(e.message, true); return; }
+  toast('正在回退…');
+  for (let i = 0; i < 25; i++) {
+    await sleep(1000);
+    try {
+      const current = await rpc('jb_maintenance_info');
+      if (current.active && current.active.current === prev) {
+        toast('已回退'); await load(false); return;
+      }
+    } catch (e) {}
+  }
+  toast('回退未在 20 秒内完成', true);
+}
+
+async function loginWithToken() {
+  const token = $('#token').value.trim();
+  if (token.length < 32) { $('#loginMsg').textContent = 'token 长度不对'; return; }
+  const button = $('#loginBtn');
+  button.disabled = true;
+  try {
+    const r = await fetch('/ui/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: token })
+    });
+    if (!r.ok) {
+      $('#loginMsg').textContent = r.status === 401 ? 'token 不正确' : '登录失败 (' + r.status + ')';
+      return;
+    }
+    $('#token').value = '';
+    $('#loginMsg').textContent = '';
+    showApp();
+    await load();
+  } catch (e) {
+    $('#loginMsg').textContent = '无法连接 bridge';
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function boot() {
+  const match = location.hash.match(/ticket=([0-9a-f]{48})/);
+  if (match) {
+    history.replaceState(null, '', location.pathname);
+    try {
+      const r = await fetch('/ui/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticket: match[1] })
+      });
+      if (r.ok) { showApp(); await load(); return; }
+    } catch (e) {}
+    showLogin('链接已过期，请输入 token');
+    return;
+  }
+  try {
+    await rpc('jb_device_info');
+    showApp();
+    await load();
+  } catch (e) {
+    showLogin(e.unauthorized ? '请先登录' : '无法连接 bridge');
+  }
+}
+
+$('#refresh').onclick = () => load();
+$('#logRefresh').onclick = async () => {
+  try { renderLog(await rpc('jb_log_tail', { limit: 20 })); } catch (e) { toast(e.message, true); }
+};
+$('#restart').onclick = restartService;
+$('#rollback').onclick = rollbackService;
+$('#loginBtn').onclick = loginWithToken;
+$('#token').addEventListener('keydown', (e) => { if (e.key === 'Enter') loginWithToken(); });
+$('#shell').addEventListener('change', async (e) => {
+  const wanted = e.target.checked;
+  try {
+    cfg = await setConfig({ allow_mobile_shell: wanted });
+    renderConfig();
+    toast(wanted ? '已启用 mobile Shell' : '已禁用 mobile Shell');
+  } catch (err) {
+    e.target.checked = !wanted;
+    toast(err.message, true);
+  }
+});
+$('#addProject').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const name = $('#pname').value.trim();
+  const path = $('#ppath').value.trim();
+  if (!name || !path) { toast('名称和路径都要填', true); return; }
+  const projects = Object.assign({}, cfg.projects);
+  projects[name] = path;
+  try {
+    cfg = await setConfig({ projects: projects });
+    $('#pname').value = '';
+    $('#ppath').value = '';
+    renderConfig();
+    toast('已添加 ' + name);
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+setInterval(() => {
+  if (!$('#app').hidden && !busy && document.visibilityState === 'visible' &&
+      !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) load(false);
+}, 20000);
+boot();
+</script>
+
+</body>
+</html>
+"""
+
+def issue_ui_ticket():
+    now = time.time()
+    with UI_LOCK:
+        for key, expiry in list(UI_TICKETS.items()):
+            if expiry <= now: UI_TICKETS.pop(key, None)
+        while len(UI_TICKETS) >= UI_MAX_TICKETS:
+            UI_TICKETS.pop(next(iter(UI_TICKETS)))
+        ticket = os.urandom(24).hex()
+        UI_TICKETS[ticket] = now + UI_TICKET_SECONDS
+    return ticket
+
+def redeem_ui_ticket(value):
+    if not isinstance(value, str) or len(value) != 48: return False
+    now = time.time()
+    with UI_LOCK: expiry = UI_TICKETS.pop(value, None)
+    return expiry is not None and expiry > now
+
+def ui_session_value(token):
+    # Stateless HMAC cookie: it survives a supervisor restart and is invalidated
+    # by token rotation, without writing sessions to disk.
+    expiry = int(time.time()) + UI_SESSION_SECONDS
+    stamp = str(expiry).encode()
+    signature = hmac.new(token.encode(), b'jbui:' + stamp, hashlib.sha256).hexdigest()
+    return '%d.%s' % (expiry, signature)
+
+def ui_session_valid(token, value):
+    if not isinstance(value, str) or len(value) > 128: return False
+    expiry_text, separator, signature = value.partition('.')
+    if separator != '.' or not expiry_text.isdigit(): return False
+    if int(expiry_text) <= time.time(): return False
+    expected = hmac.new(token.encode(), b'jbui:' + expiry_text.encode(),
+                        hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature, expected)
+
+def valid_project_name(name):
+    return (isinstance(name, str) and 1 <= len(name) <= 32 and
+            name[0].isalnum() and name.isascii() and
+            all(character.isalnum() or character in '._-' for character in name))
+
+def ui_config_public():
+    config = rt.config()
+    return {'projects': dict(config['projects']),
+            'allow_mobile_shell': config.get('allow_mobile_shell') is True}
+
+def ui_config_apply(patch):
+    """Change only the two UI-owned settings; unknown keys are preserved."""
+    if not isinstance(patch, dict) or not patch:
+        raise ValueError('Nothing to change')
+    if set(patch) - {'allow_mobile_shell', 'projects'}:
+        raise ValueError('Unknown setting')
+    config = rt.load('config-v030.json')
+    if 'allow_mobile_shell' in patch:
+        if type(patch['allow_mobile_shell']) is not bool:
+            raise ValueError('allow_mobile_shell must be boolean')
+        config['allow_mobile_shell'] = patch['allow_mobile_shell']
+    if 'projects' in patch:
+        projects = patch['projects']
+        if not isinstance(projects, dict) or not 1 <= len(projects) <= 16:
+            raise ValueError('At least one project and at most 16')
+        checked = {}
+        state = os.path.realpath(str(rt.STATE))
+        for name, path in projects.items():
+            if not valid_project_name(name):
+                raise ValueError('Invalid project name')
+            if (not isinstance(path, str) or not path.startswith('/') or
+                    len(path) > MAX_PATH or '\x00' in path):
+                raise ValueError('Project path must be absolute')
+            if os.path.islink(path) or not os.path.isdir(path):
+                raise ValueError('Project path is not a plain directory')
+            real = os.path.realpath(path)
+            if real == '/' or real == state or real.startswith(state + os.sep):
+                raise ValueError('Project path not allowed')
+            checked[name] = os.path.normpath(path)
+        config['projects'] = checked
+    rt.save('config-v030.json', config)
+    return ui_config_public()
+
+def tool_ui_url(args):
+    ticket = issue_ui_ticket()
+    base = 'http://127.0.0.1:%d/ui' % rt.PORT
+    return {'url': base + '#ticket=' + ticket, 'login_url': base,
+            'expires_in': UI_TICKET_SECONDS,
+            'note': 'Open on this device. The fragment is exchanged once for an '
+                    'HttpOnly session cookie; it never reaches the server log.'}
 
 # ---------------------------------------------------------------------------
 # 0.3.5 file interface. Every path goes through rt.target / rt.project_fd, i.e.
@@ -217,7 +804,6 @@ LOG_NAME = 'log-v030.jsonl'     # private state, 0600, rotated in place
 LOG_MAX = 262144                # rewrite once the log grows past 256 KiB
 LOG_KEEP = 131072               # keep the newest 128 KiB after a rotation
 MAX_LOG_LINES = 200
-
 def kind_of(mode):
     if stat.S_ISLNK(mode): return 'symlink'
     if stat.S_ISDIR(mode): return 'dir'
@@ -1363,6 +1949,8 @@ def invoke(name, args):
         return rt.command(args['command'], args['project'], args.get('timeout', 15), args.get('output_limit', 16384))
     if name == 'jb_find':
         return tool_find(args)
+    if name == 'jb_ui_url':
+        return tool_ui_url(args)
     with rt.LOCK:
         if name in ('jb_read_file', 'jb_write_file', 'jb_edit_file'):
             with rt.target(args['project'], args['path']) as (fd, leaf):
@@ -1552,36 +2140,113 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def setup(self):
         super().setup(); self.connection.settimeout(5)
-    def reply(self, status, data=None):
+    def host_ok(self):
+        return (len(self.headers.get_all('Host', [])) == 1 and
+                self.headers.get('Host') in ('127.0.0.1:%d' % rt.PORT,
+                                             'localhost:%d' % rt.PORT))
+    def origin_ok(self):
+        origin = self.headers.get('Origin')
+        return origin is None or origin in ('http://127.0.0.1:%d' % rt.PORT,
+                                            'http://localhost:%d' % rt.PORT)
+    def reply(self, status, data=None, headers=None):
         body = b'' if data is None else json.dumps(data).encode()
-        self.send_response(status); self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(body))); self.send_header('Connection', 'close')
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Connection', 'close')
+        self.send_header('Cache-Control', 'no-store')
+        for key, value in (headers or {}).items(): self.send_header(key, value)
         self.end_headers()
         if body: self.wfile.write(body)
         self.wfile.flush(); self.close_connection = True
+    def send_ui(self):
+        body = UI_HTML.encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Connection', 'close')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Frame-Options', 'DENY')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('Content-Security-Policy',
+                         "default-src 'none'; style-src 'unsafe-inline'; "
+                         "script-src 'unsafe-inline'; connect-src 'self'; "
+                         "img-src data:; base-uri 'none'; form-action 'none'; "
+                         "frame-ancestors 'none'")
+        self.end_headers()
+        self.wfile.write(body); self.wfile.flush(); self.close_connection = True
+    def session_cookie(self):
+        raw = self.headers.get('Cookie') or ''
+        for part in raw.split(';'):
+            name, separator, value = part.strip().partition('=')
+            if separator and name == 'jbui': return value
+        return ''
     def authorized(self):
-        if len(self.headers.get_all('Authorization', [])) != 1:
-            note_auth_failure(401); self.reply(401); return False
-        if (len(self.headers.get_all('Host', [])) != 1 or self.headers.get('Origin') is not None or
-                self.headers.get('Host') not in ('127.0.0.1:%d' % rt.PORT, 'localhost:%d' % rt.PORT)):
+        if not self.host_ok():
             note_auth_failure(403); self.reply(403); return False
-        if not hmac.compare_digest(self.headers['Authorization'].encode(), ('Bearer ' + self.server.token).encode()):
+        if not self.origin_ok():
+            note_auth_failure(403); self.reply(403); return False
+        headers = self.headers.get_all('Authorization', [])
+        if len(headers) > 1:
             note_auth_failure(401); self.reply(401); return False
-        return True
-    def do_GET(self):
-        if self.authorized(): self.reply(405 if self.path == '/mcp' else 404)
-    def do_POST(self):
-        if not self.authorized(): return
-        if self.path != '/mcp': self.reply(404); return
+        if headers:
+            if hmac.compare_digest(headers[0].encode(),
+                                   ('Bearer ' + self.server.token).encode()):
+                return True
+            note_auth_failure(401); self.reply(401); return False
+        cookie = self.session_cookie()
+        if cookie and ui_session_valid(self.server.token, cookie): return True
+        note_auth_failure(401); self.reply(401); return False
+    def read_json(self, limit):
         try:
             size = int(self.headers.get('Content-Length', '0'))
-            if (self.headers.get('Transfer-Encoding') or len(self.headers.get_all('Content-Length', [])) != 1 or
-                    not 0 < size <= MAX_BODY):
-                self.reply(413); return
+            if (self.headers.get('Transfer-Encoding') or
+                    len(self.headers.get_all('Content-Length', [])) != 1 or
+                    not 0 < size <= limit):
+                self.reply(413); return None
             body = self.rfile.read(size)
-            if len(body) != size: self.reply(400); return
-            req = json.loads(body)
-        except (ValueError, OSError, RecursionError): self.reply(400); return
+            if len(body) != size: self.reply(400); return None
+            value = json.loads(body)
+        except (ValueError, OSError, RecursionError):
+            self.reply(400); return None
+        if not isinstance(value, dict):
+            self.reply(400); return None
+        return value
+    def do_GET(self):
+        if not self.host_ok():
+            note_auth_failure(403); self.reply(403); return
+        path = self.path.split('?', 1)[0]
+        if path in ('/ui', '/ui/'):
+            self.send_ui(); return
+        if not self.authorized(): return
+        if path == '/ui/api/config':
+            self.reply(200, ui_config_public()); return
+        self.reply(405 if path == '/mcp' else 404)
+    def do_POST(self):
+        if not self.host_ok():
+            note_auth_failure(403); self.reply(403); return
+        if not self.origin_ok():
+            note_auth_failure(403); self.reply(403); return
+        path = self.path.split('?', 1)[0]
+        if path == '/ui/session':
+            self.ui_session(); return
+        if not self.authorized(): return
+        if path == '/ui/api/config':
+            data = self.read_json(UI_CONFIG_BODY)
+            if data is None: return
+            try:
+                self.reply(200, ui_config_apply(data))
+            except Exception as exc:
+                code, message = error_info(exc)
+                log_event({'time': int(time.time()), 'tool': 'ui-config', 'code': code,
+                           'error': type(exc).__name__,
+                           'errno': getattr(exc, 'errno', None),
+                           'detail': str(exc)[:300]})
+                self.reply(400, {'error': {'code': code, 'message': message}})
+            return
+        if path != '/mcp': self.reply(404); return
+        req = self.read_json(MAX_BODY)
+        if req is None: return
         out = rpc(req)
         try: self.reply(202 if out is None else 200, out)
         finally:
@@ -1590,6 +2255,25 @@ class Handler(BaseHTTPRequestHandler):
                 # prevent client receipt; query status after reconnecting.
                 timer = threading.Timer(2, exit_bridge)
                 timer.daemon = True; timer.start()
+    def ui_session(self):
+        data = self.read_json(UI_LOGIN_BODY)
+        if data is None: return
+        ticket = data.get('ticket'); token = data.get('token')
+        accepted = False
+        if isinstance(ticket, str) and redeem_ui_ticket(ticket): accepted = True
+        elif isinstance(token, str) and hmac.compare_digest(
+                token.encode(), self.server.token.encode()): accepted = True
+        if not accepted:
+            note_auth_failure(401)
+            self.reply(401, {'error': {'code': 'EAUTH',
+                                       'message': 'invalid token or ticket'}})
+            return
+        value = ui_session_value(self.server.token)
+        self.reply(200, {'ok': True, 'expires_in': UI_SESSION_SECONDS},
+                   headers={'Set-Cookie':
+                            'jbui=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=%d'
+                            % (value, UI_SESSION_SECONDS)})
+
 
 def serve():
     import signal

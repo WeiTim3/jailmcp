@@ -206,7 +206,7 @@ class HTTP(Fixture):
         req=urllib.request.Request('http://127.0.0.1:%d/mcp'%self.port,body,headers=headers)
         return urllib.request.urlopen(req,timeout=3)
     def test_authenticated_list(self):
-        with self.post() as r:self.assertEqual(len(json.load(r)['result']['tools']),31)
+        with self.post() as r:self.assertEqual(len(json.load(r)['result']['tools']),32)
     def test_authentication_required(self):
         for headers in ({},{'Authorization':'Bearer incorrect'}):
             with self.assertRaises(urllib.error.HTTPError) as e:self.post(headers=headers)
@@ -271,6 +271,147 @@ class HTTP(Fixture):
             for _ in range(4):self.server.slots.release()
     def test_notification_202(self):
         with self.post(json.dumps({'jsonrpc':'2.0','method':'notifications/initialized'}).encode()) as r:self.assertEqual(r.status,202)
+
+    def post_json(self, path, data, headers=None):
+        body = json.dumps(data).encode()
+        merged = {'Content-Type': 'application/json'}
+        merged.update(headers or {})
+        request = urllib.request.Request('http://127.0.0.1:%d%s' % (self.port, path),
+                                         body, headers=merged)
+        return urllib.request.urlopen(request, timeout=3)
+
+    def test_ui_page_is_public_but_hardened(self):
+        request = urllib.request.Request('http://127.0.0.1:%d/ui' % self.port)
+        with urllib.request.urlopen(request, timeout=3) as response:
+            self.assertEqual(response.status, 200)
+            page = response.read().decode()
+            self.assertIn('OpenMinis JB', page)
+            self.assertIn('连接到本机桥', page)
+            self.assertIn("default-src 'none'", response.headers['Content-Security-Policy'])
+            self.assertEqual(response.headers['X-Frame-Options'], 'DENY')
+            self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        # A foreign Host is refused even for the static page.
+        request = urllib.request.Request('http://127.0.0.1:%d/ui' % self.port,
+                                         headers={'Host': 'example.invalid'})
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request, timeout=3)
+        self.assertEqual(caught.exception.code, 403)
+
+    def test_ui_ticket_is_one_time_and_sets_cookie(self):
+        b.UI_TICKETS.clear()
+        link = b.invoke('jb_ui_url', {})['url']
+        self.assertTrue(link.startswith('http://127.0.0.1:%d/ui#ticket=' % self.port))
+        ticket = link.split('#ticket=', 1)[1]
+        with self.post_json('/ui/session', {'ticket': ticket}) as response:
+            self.assertEqual(response.status, 200)
+            cookie = response.headers['Set-Cookie'].split(';', 1)[0]
+            self.assertIn('HttpOnly', response.headers['Set-Cookie'])
+            self.assertIn('SameSite=Strict', response.headers['Set-Cookie'])
+        # The cookie alone authenticates an MCP call.
+        request = urllib.request.Request(
+            'http://127.0.0.1:%d/mcp' % self.port,
+            json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}).encode(),
+            headers={'Content-Type': 'application/json', 'Cookie': cookie})
+        with urllib.request.urlopen(request, timeout=3) as response:
+            self.assertEqual(len(json.load(response)['result']['tools']), 32)
+        # The same ticket cannot be redeemed twice.
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.post_json('/ui/session', {'ticket': ticket})
+        self.assertEqual(caught.exception.code, 401)
+        # A tampered cookie is refused.
+        request = urllib.request.Request(
+            'http://127.0.0.1:%d/mcp' % self.port,
+            json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}).encode(),
+            headers={'Content-Type': 'application/json', 'Cookie': cookie[:-1] + '0'})
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request, timeout=3)
+        self.assertEqual(caught.exception.code, 401)
+
+    def test_ui_expired_ticket_and_ticket_bound(self):
+        b.UI_TICKETS.clear()
+        ticket = b.issue_ui_ticket()
+        b.UI_TICKETS[ticket] = 1
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.post_json('/ui/session', {'ticket': ticket})
+        self.assertEqual(caught.exception.code, 401)
+        b.UI_TICKETS.clear()
+        for _ in range(b.UI_MAX_TICKETS + 4): b.issue_ui_ticket()
+        self.assertEqual(len(b.UI_TICKETS), b.UI_MAX_TICKETS)
+
+    def test_ui_token_login_and_config_update(self):
+        b.UI_TICKETS.clear()
+        with self.post_json('/ui/session', {'token': rt.token()}) as response:
+            cookie = response.headers['Set-Cookie'].split(';', 1)[0]
+        request = urllib.request.Request('http://127.0.0.1:%d/ui/api/config' % self.port,
+                                         headers={'Cookie': cookie})
+        with urllib.request.urlopen(request, timeout=3) as response:
+            config = json.load(response)
+        self.assertEqual(sorted(config), ['allow_mobile_shell', 'projects'])
+        self.assertTrue(config['allow_mobile_shell'])
+        self.assertIn('main', config['projects'])
+        with self.post_json('/ui/api/config', {'allow_mobile_shell': False},
+                            {'Cookie': cookie}) as response:
+            self.assertFalse(json.load(response)['allow_mobile_shell'])
+        self.assertFalse(rt.config()['allow_mobile_shell'])
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.post_json('/ui/api/config', {'projects': {}}, {'Cookie': cookie})
+        self.assertEqual(caught.exception.code, 400)
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.post_json('/ui/api/config',
+                           {'projects': {'new': '/tmp/definitely-not-a-project-here'}},
+                           {'Cookie': cookie})
+        self.assertEqual(caught.exception.code, 400)
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.post_json('/ui/api/config',
+                           {'projects': {'..': str(self.project)}}, {'Cookie': cookie})
+        self.assertEqual(caught.exception.code, 400)
+
+    def test_ui_config_refuses_private_state_and_symlink_anchor(self):
+        with self.post_json('/ui/session', {'token': rt.token()}) as response:
+            cookie = response.headers['Set-Cookie'].split(';', 1)[0]
+        state = str(self.state)
+        link = self.base / 'linked-project'
+        link.symlink_to(self.project)
+        for path in (state, str(link), '/'):
+            with self.subTest(path=path), self.assertRaises(urllib.error.HTTPError) as caught:
+                self.post_json('/ui/api/config', {'projects': {'bad': path}},
+                               {'Cookie': cookie})
+            self.assertEqual(caught.exception.code, 400)
+
+    def test_ui_config_requires_a_session(self):
+        for method, path, body in (
+                ('GET', '/ui/api/config', None),
+                ('POST', '/ui/api/config', b'{"allow_mobile_shell":false}')):
+            request = urllib.request.Request(
+                'http://127.0.0.1:%d%s' % (self.port, path), body,
+                headers={'Content-Type': 'application/json'} if body else {},
+                method=method)
+            with self.subTest(method=method), self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=3)
+            self.assertEqual(caught.exception.code, 401)
+
+    def test_ui_login_rejects_a_wrong_token(self):
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.post_json('/ui/session', {'token': '0' * 64})
+        self.assertEqual(caught.exception.code, 401)
+
+    def test_ui_url_does_not_contain_the_token(self):
+        b.UI_TICKETS.clear()
+        result = b.invoke('jb_ui_url', {})
+        self.assertNotIn(rt.token(), json.dumps(result))
+        self.assertRegex(result['url'], r'/ui#ticket=[0-9a-f]{48}$')
+
+    def test_ui_same_origin_allowed_foreign_origin_rejected(self):
+        headers = {'Authorization': 'Bearer ' + rt.token(),
+                   'Origin': 'http://127.0.0.1:%d' % self.port}
+        with self.post(headers=headers) as response:
+            self.assertEqual(response.status, 200)
+        for origin in ('https://example.invalid', 'http://127.0.0.1:1', 'null'):
+            with self.subTest(origin=origin), self.assertRaises(urllib.error.HTTPError) as caught:
+                self.post(headers={'Authorization': 'Bearer ' + rt.token(),
+                                   'Origin': origin})
+            self.assertEqual(caught.exception.code, 403)
+
 
 class RealSupervisor(Fixture):
     """Test-only copy substitutes UID assertion and paths; production has no bypass."""

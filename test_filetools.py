@@ -1231,6 +1231,7 @@ class Authorization(Fixture):
         'jb_symlink': {'project': 'main', 'path': 'x', 'target': 'y'},
         'jb_readlink': {'project': 'main', 'path': 'x'},
         'jb_log_tail': {},
+        'jb_ui_url': {},
     }
 
     def test_registry_matches_expected_tools(self):
@@ -1241,15 +1242,17 @@ class Authorization(Fixture):
                     'jb_read_chunk', 'jb_write_chunk', 'jb_projects',
                     'jb_mkdir', 'jb_upload_begin', 'jb_upload_chunk',
                     'jb_upload_commit', 'jb_upload_abort', 'jb_find',
-                    'jb_chmod', 'jb_copy', 'jb_symlink', 'jb_readlink', 'jb_log_tail']
+                    'jb_chmod', 'jb_copy', 'jb_symlink', 'jb_readlink', 'jb_log_tail',
+                    'jb_ui_url']
         self.assertEqual([tool['name'] for tool in b.TOOLS], expected)
         self.assertEqual(sorted(b.SPEC), sorted(expected))
         for tool in b.TOOLS:
             self.assertFalse(tool['inputSchema']['additionalProperties'])
-        self.assertEqual(b.VERSION, '0.3.11')
+        self.assertEqual(b.VERSION, '0.3.12')
         # 0.3.5 appends five tools after the twenty 0.3.4 tools: the first twenty
         # keep their exact names, order and schemas.
-        self.assertEqual(len(expected), 31)
+        self.assertEqual(len(expected), 32)
+        self.assertEqual(b.UI_HTML, (HERE / 'source-v030' / 'ui.html').read_text())
         self.assertEqual(b.SPEC['jb_mkdir']['required'], ['project', 'path'])
         self.assertEqual(sorted(b.SPEC['jb_mkdir']['properties']),
                          ['mode', 'parents', 'path', 'project'])
@@ -1328,7 +1331,7 @@ class Authorization(Fixture):
         self.assertEqual(sorted(device),
                          ['bridge', 'ios', 'machine', 'pid', 'release', 'source_sha256',
                           'system', 'uid'])
-        self.assertEqual(device['bridge'], '0.3.11')
+        self.assertEqual(device['bridge'], '0.3.12')
 
     def test_no_root_helper_no_token_no_root_widening(self):
         self.put('x', b'x')

@@ -23,7 +23,7 @@ PREVIOUS = Path('/usr/local/lib/openminis-jb-previous')
 PREV_SCHEMA = 'openminis-jb-previous-1'
 PREV_EXEC = '/usr/local/bin/openminis-jb-restore-runtime'
 RECEIPT = STORE / '.clean-install-v032'
-VERSION = '0.3.13-2+experimental'
+VERSION = '0.3.14-1+experimental'
 RECEIPT_DATA = ('OpenMinis-Jailbreak clean-install ' + VERSION + '\n').encode()
 RECEIPT_PREFIX = b'OpenMinis-Jailbreak clean-install '
 SCHEMA = 'openminis-jb-upgrade-1'
@@ -86,6 +86,12 @@ KNOWN_SETS = {
     '0.3.12-1': {'launcher.py': 'b905c063a8e7235b2e40cd1e3137e77372537d4611ff0af1e410049e9f96b497',
                  'maintenance_runtime.py': 'e38fe25d1d61ba759824a3d17af2101af0fbc1a6533c3444e8636211d95af46a',
                  'bridge.py': '112cad8c67c5901be434046c1c5f48fadc89a2f93dfcee433e092419330c4191',
+                 'mobile_setup.py': '78ed4a0f75a16ba15298649713db62d3434c86e894ba0a3cace5385907389550'},
+    # 0.3.13-2 is the mode-preserving/structured-error build (bridge 0.3.11);
+    # kept so a device on it can upgrade to 0.3.14 in place.
+    '0.3.13-2': {'launcher.py': 'b905c063a8e7235b2e40cd1e3137e77372537d4611ff0af1e410049e9f96b497',
+                 'maintenance_runtime.py': '79a9b4a8dee995c48a22307db52f5b65561db4a05dc7bf31d012cf414e8d7d58',
+                 'bridge.py': '71c29b304fad659517508424603f3f002c3b5d847fda82654b87de38accdfa78',
                  'mobile_setup.py': '78ed4a0f75a16ba15298649713db62d3434c86e894ba0a3cace5385907389550'},
 }
 REMOVAL = ''  # Filled by reproducible builder.

@@ -39,7 +39,24 @@ token 位于设备上（私密数据，勿分享）：
 
 安装后无需重启；卸载后可直接重装，**不必 purge**。
 
-## 工具（31 个）
+## 控制台（本机设置面板）
+
+bridge 自带一个只监听回环的控制台：
+
+- 在对话里调用 `jb_ui_url`，打开返回的一次性链接（120 秒有效，只能用一次）；
+- 或在设备浏览器打开 `http://127.0.0.1:18765/ui`，粘贴 token。
+
+面板显示 bridge 版本、API、PID、supervisor、可回退版本、项目根和错误日志；
+可以切换 `mobile Shell`、增删项目根、重启服务、回退上一版。页面完全内嵌、
+无外部资源，`/ui` 本身不含任何机密；ticket 在 URL fragment 中，换取
+`HttpOnly; SameSite=Strict` 的 8 小时会话 cookie。配置写入只走
+`/ui/api/config`，不新增 MCP 工具，因此不扩大模型可调用的工具面。
+
+这是桥自带的面板，**不是 OpenMinis 宿主 App 的原生 Settings 页面**：宿主 App
+是签名应用，不能从外部注入页面。iOS 系统设置里的原生面板需要单独的
+PreferenceLoader bundle（需要 Theos/SDK 编译），目前还未包含。
+
+## 工具（32 个）
 
 - **信息**：`jb_device_info`、`jb_process_list`、`jb_maintenance_info`、`jb_projects`
 - **文件**：`jb_read_file`、`jb_write_file`、`jb_edit_file`、`jb_list_dir`、`jb_stat`、
@@ -50,7 +67,7 @@ token 位于设备上（私密数据，勿分享）：
 - **上传**：`jb_upload_begin` / `jb_upload_chunk` / `jb_upload_commit` / `jb_upload_abort`（原子就位）
 - **执行**：`jb_exec`、`jb_restart`
 - **更新**：`jb_stage_update`、`jb_validate_update`、`jb_apply_update`、`jb_rollback`
-- **诊断**：`jb_log_tail`
+- **诊断**：`jb_log_tail`、`jb_ui_url`
 
 ## 文件权限、分块与错误
 
@@ -64,7 +81,7 @@ token 位于设备上（私密数据，勿分享）：
   `{"error": {"code": "ENOENT", "message": "...", "ref": "..."}}`。`code` 是稳定的 errno 风格代码
   （`ENOENT` / `EACCES` / `EINVAL` / `ENOSPC` …），`message` 不回显调用参数；完整异常写入
   `.bridge-state/log-v030.jsonl`（`0600`，256 KiB 上限，原地轮转），用 `jb_log_tail` 按 `ref` 查看。
-- **单次上限**：`jb_read_file` / `jb_write_file` 单次 128 KiB；大文件用 `jb_read_chunk` /
+- **单次上限**：`jb_read_file` / `jb_write_file` 单次 256 KiB；大文件用 `jb_read_chunk` /
   `jb_upload_*`。`jb_copy` 单文件 256 MiB。
 
 ## 路径约定：系统目录优先，越狱目录次之
@@ -119,15 +136,15 @@ python3 test_supervisor.py  # 真实子进程
 python3 test_upgrade.py     # 模拟完整 dpkg 序列
 ```
 
-仓库内共 247 项测试；CI 在完整测试集之外，额外用 Python 3.9 运行非特权测试。
+仓库内共 257 项测试；CI 在完整测试集之外，额外用 Python 3.9 运行非特权测试。
 
 ## 状态
 
-`0.3.13-2+experimental`（bridge `0.3.11`，API `3`）。核心能力均真机验证：安装/卸载/重装/原地升级/
+`0.3.14-1+experimental`（bridge `0.3.12`，API `3`）。核心能力均真机验证：安装/卸载/重装/原地升级/
 中断恢复/一键回退/自更新/坏版本回退/重启重越狱恢复/压力边界。仅 EXDEV 跨卷回退未真机触发。
 
 **已知限制**：递归删除非原子（>10000 条目须分片）；`jb_exec` 子进程每文件 256 KiB 上限、
-最长 60 秒、无后台任务；单次 `jb_write_file` 128 KiB；`jb_copy` 不保留 mtime/xattr。
+最长 60 秒、无后台任务；单次 `jb_write_file` 256 KiB；`jb_copy` 不保留 mtime/xattr。
 状态文件须 0600。
 
 实验性项目，请自行评估风险后安装。
