@@ -30,6 +30,27 @@ jobs:
           mkdir -p "$RUNNER_TEMP/frida-core"
           tar -xf "$RUNNER_TEMP/frida-core.tar.xz" -C "$RUNNER_TEMP/frida-core"
 
+      - name: Build the ObjC prelude
+        run: |
+          set -euo pipefail
+          npm install --no-save frida-objc-bridge@8.0.6 esbuild
+          cat > prelude.mjs <<'EOF'
+          import ObjC from "frida-objc-bridge";
+          globalThis.ObjC = ObjC;
+          EOF
+          npx esbuild prelude.mjs --bundle --format=iife --platform=neutral \
+            --target=es2020 --outfile=prelude.js
+          python3 - <<'PY'
+          data = open("prelude.js", "rb").read()
+          with open("frida-src/frida-prelude.h", "w") as f:
+              f.write("static const char kFridaPrelude[] = {\n")
+              for i, b in enumerate(data):
+                  f.write(f"{b},")
+                  if i % 24 == 23: f.write("\n")
+              f.write("0};\n")
+          print("prelude bytes", len(data))
+          PY
+
       - name: Build the on-device client
         run: |
           set -euo pipefail

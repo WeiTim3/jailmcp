@@ -12,6 +12,7 @@
  *   frida run -f com.apple.Preferences -e 'console.log("hi")'
  */
 #include "frida-core.h"
+#include "frida-prelude.h"
 
 #include <signal.h>
 #include <stdio.h>
@@ -175,7 +176,7 @@ cmd_run (FridaDeviceManager *manager, const gchar *address,
   gsize source_len = 0;
   if (inline_script != NULL)
     {
-      source = g_strdup (inline_script);
+      source = g_strconcat (kFridaPrelude, "\n", inline_script, NULL);
     }
   else if (!g_file_get_contents (script_path, &source, &source_len, &error))
     {
@@ -185,6 +186,13 @@ cmd_run (FridaDeviceManager *manager, const gchar *address,
         g_error_free (error);
       g_object_unref (device);
       return 1;
+    }
+
+  if (inline_script == NULL)
+    {
+      gchar *user_source = source;
+      source = g_strconcat (kFridaPrelude, "\n", user_source, NULL);
+      g_free (user_source);
     }
 
   active_session = frida_device_attach_sync (device, pid, NULL, NULL, &error);
