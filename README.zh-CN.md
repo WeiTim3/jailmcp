@@ -1,113 +1,87 @@
-# OpenMinis-Jailbreak 0.3.12-1+experimental
+# JailMCP
 
-以 launchd 服务形式运行、通过本机 MCP 向 OpenMinis 提供越狱侧能力的服务包。
-OpenMinis 本体不需要越狱权限、不需要注入、不需要改签名。
+**JailMCP — 把越狱 iPhone 变成 MCP 服务器。**
 
-完整说明见项目自述文件；本文档随包安装，只记录版本相关信息。
+JailMCP 是面向越狱 iOS 的**客户端中立 MCP 服务器**。它把手机本地能力通过认证过的回环接口暴露出来：
 
-## 本版改动（0.3.12）
+- 文件与项目根
+- 无沙箱的 mobile Shell
+- 进程与设备状态
+- Frida：进程列表、spawn/attach、ObjC hook、长期 session 和日志
+- 审计与结构化错误
 
-**消除分块写入/上传的 O(n²) 整文件重算哈希**（bridge 版本提升到 `0.3.10`）。此前每写一块都会重算**整个文件**的
-sha256 —— 256 MiB 分 1024 块约等于读取 137 GB，吞吐随体积单调衰减。
+Minis 只是受支持的 MCP 客户端之一，不是项目归属。任何能访问 `127.0.0.1` 的 MCP 客户端都可以使用。
 
-现在整文件摘要**只在 `final=true`（或显式 `want_sha256=true`）时计算**，其余块只做一次 fstat 取大小：返回体新增
-`hashed` 字段，`sha256` 未计算时为 `null`。CAS（`expected_sha256`）语义不变（它本来就在写前校验）。
+## 当前状态
 
-真机实测（分块上传，256 KiB/块）：32 → 128 MiB 每个窗口都稳定在 **~2.97 MiB/s**（修复前 1.62 → 0.23 MiB/s 单调衰减）；
-外推 256 MiB 约 **85 秒**（修复前约 7 分钟）。
+项目正在从 **OpenMinis-Jailbreak** 分阶段改名为 **JailMCP**。
 
-`launcher.py` / `maintenance_runtime.py` / `mobile_setup.py` 未变，只有 `bridge.py` 变了；升级白名单已含 0.3.11 那套运行库。
-
-## 历史（0.3.11）
-
-`jb_find` 增强（bridge 版本提升到 `0.3.9`）。除了按名字搜，现在还能：
-
-- **按内容搜**：`content="..."` 在文件内查找，返回 1 起始行号与有界摘录，受 `max_file_bytes` 约束；
-- **按大小过滤**：`min_bytes` / `max_bytes` —— 只作用于普通文件；带大小条件时不再列出目录；
-- **元信息**：每个匹配返回 `mode` / `uid` / `gid` / `mtime`（另有 `size`、`name_match`、`line`、`excerpt`）。
-
-仍为只读、有界（墙钟 / 条目数 / 深度 / 匹配数 / 单文件字节），符号链接目录只报告不进入。
-
-`launcher.py` / `maintenance_runtime.py` / `mobile_setup.py` 未变，只有 `bridge.py` 变了；升级白名单已含 0.3.10 那套运行库。
-
-## 历史（0.3.10）
-
-`jb_find` 现在**直接接受设备路径**，自动映射到系统目录（bridge 版本提升到 `0.3.8`）：
-
-| 你写 | 实际搜索 |
+| 层级 | 0.4.0 状态 |
 |---|---|
-| `/var/mobile/Documents`（默认 `/var/mobile`） | `/rootfs/private/var/mobile/Documents` |
-| `/System/Library/Fonts` | `/rootfs/System/Library/Fonts` |
-| 已是 `/rootfs/…` | 原样使用 |
+| 品牌 / 仓库 | JailMCP / `jailmcp` |
+| 当前运行包 | `0.3.13-2+experimental` |
+| bridge | `0.3.11` |
+| 包名 | 仍是 `app.openminis.jailbreak` |
+| MCP 工具 | 37 个，包含原生 `jb_frida_*` |
+| MCP 地址 | `http://127.0.0.1:18765/mcp` |
 
-加 `jailbreak=true` 改为搜索越狱目录（jbroot）。`jb_maintenance_info` 的 `paths` 字段给出两条根路径与 `prefer: "system"`。
+0.4.0 只改品牌，包名、launchd、状态目录和工具名都不动，保证现有安装继续升级、token 不丢。新的 `dev.jailmcp.bridge` 包在 0.5.0 落地。
 
-`launcher.py` / `maintenance_runtime.py` / `mobile_setup.py` 未变，只有 `bridge.py` 变了；升级白名单已含 0.3.9 那套运行库。
+## 命名
 
-## 历史（0.3.9）
+```text
+品牌          JailMCP
+中文          越狱 MCP
+仓库          jailmcp
+守护进程      jailmcpd
+CLI           jailmcp
+MCP server    jailmcp
+工具前缀      jb_*        （jb = jailbreak，永久保留）
+主包          dev.jailmcp.bridge       （0.5.0）
+Frida 包      dev.jailmcp.frida-cli   （0.5.0）
+状态目录      .jailmcp                （0.5.0）
+```
 
-新增工具 **`jb_find`**（bridge 版本提升到 `0.3.7`）：在**真实设备文件系统**（`/rootfs` 下）按名字递归搜索，
-默认从 `/rootfs/private/var/mobile` 开始。只读、有界（墙钟 / 条目数 / 深度），不进入符号链接目录。
+完整迁移表见 [NAMING.md](NAMING.md)。
 
-背景：roothide 设备上 `/var` 被重定向到 jailbreak 自己的树，设备真实数据在 `/rootfs/private/var/…`；
-此前只能看到重定向那棵，所以会"搜不到"某些文件（如 DumpDecrypter 的 ipa）。
+## 原生 Frida 工具
 
-**路径约定（系统目录优先）**：同一路径前缀下有两棵树——**系统目录** `/rootfs/private/var/mobile/…`
-（iOS 真实数据卷）与**越狱目录** `/var/mobile/…`（roothide 重定向，落在 jbroot 内）。
-约定：查找、读取、写入**一律以系统目录为先，越狱目录为次**。
-`jb_maintenance_info` 新增 `paths` 字段直接给出这两条根路径（`prefer: "system"`），
-`jb_find` 默认也搜系统目录。
+```text
+jb_frida_ps
+jb_frida_run
+jb_frida_start
+jb_frida_logs
+jb_frida_stop
+jb_frida_sessions
+```
 
-`launcher.py` / `maintenance_runtime.py` / `mobile_setup.py` 与 0.3.6 逐字节相同，**只有 `bridge.py` 变了**，
-因此升级白名单新增了 0.3.6 运行库集合（`KNOWN_SETS['0.3.6-1']`）；0.3.6 / 0.3.7 / 0.3.8 均可原地升级。
+`jb_frida_start` 返回 session id 和日志路径；`jb_frida_logs` 按 offset 读取新输出；`jb_frida_stop` 结束 session。
 
-## 历史（0.3.8）
+spawn 需要设备解锁。Frida server 是 root 服务，只监听 `127.0.0.1:27042`；客户端以 `mobile` 运行。
 
-只改 control 脚本（运行时四件与 0.3.7 / 0.3.6 **逐字节相同**）。修掉一个真机缺陷：
+## 安全边界
 
-**过期快照不再阻塞全新安装**：干净安装守卫此前只要 `/usr/local/lib/openminis-jb-transaction`
-存在就拒绝，而卸载又故意保留该快照供复查——两者叠加，导致「卸载 → 重装」在经历过一次中断升级后
-永久卡死（`preinst-root-residue`）。现在只有**同一次开机、未提交**的快照（即真正进行中的升级）
-才拒绝；跨开机、已提交、或结构不可读的快照都不可能用于恢复，只打印一行 NOTICE 并放行。
+- 只监听 `127.0.0.1`
+- Bearer token，0600
+- `allow_mobile_shell` 是 shell/Frida 的总开关
+- bridge 内没有 root helper
+- Frida server 是唯一的 root 组件
+- 不要把 Frida 或 MCP 绑到 `0.0.0.0`
 
-## 历史（0.3.7）
+## 路线
 
-只修改 control 脚本 —— `launcher.py` / `maintenance_runtime.py` / `bridge.py` /
-`mobile_setup.py` 与 0.3.6 **逐字节相同**。修掉两个「升级之后无路可走」的残留风险：
+```text
+0.4.0  品牌：JailMCP、仓库、文档、MCP server name
+       包名 / 路径 / 工具名不变
 
-1. **升级在解包阶段中断时的自动恢复**
-   dpkg 在 `preinst` 之后、`postinst` 之前失败（最常见是载荷解包失败）时会调用本版本的
-   `postrm abort-upgrade <旧版本号>`。该路径现在会：只用**未提交、同一 boot** 的快照与其 manifest
-   （不读取解包结果）把 4 个 root 运行时文件与 plist **逐字节**还原——先整体校验、每个文件写盘前
-   再校验 sha256——随后恢复移动端 active 指针、重启服务并做认证健康检查，只打印**一行**结论。
-   无快照 / 已提交 / 跨 boot / 结构或哈希不可信时，只打印一行 NOTICE、什么都不改、退出码 0，
-   **绝不卡住 dpkg**。幂等；绝不读写或打印 token，绝不碰 config / audit。
+0.5.0  dev.jailmcp.bridge + dev.jailmcp.frida-cli
+       .jailmcp 状态目录
+       从旧包和旧路径迁移
 
-2. **一键回到上一个运行时**
-   成功升级不再直接丢弃旧运行时，而是把升级前的 4 个运行时文件、服务 plist 与移动端 active 指针
-   保留到 `/usr/local/lib/openminis-jb-previous`（root 所有、0700，含显式 manifest：from/to 版本、
-   全部哈希、boot id、旧 active 指针），并安装 root 恢复助手：
+1.0.0  移除旧包名
+       jb_* 工具名永久保留
+```
 
-   ```sh
-   sudo /usr/local/bin/openminis-jb-restore-runtime [--dry-run] [--pointer-only]
-   ```
+## 旧文档
 
-   先校验 manifest 与每个 sha256，再还原运行库、plist 与指针，重启服务并验证健康，逐条打印所做操作；
-   `--dry-run` 不落任何字节；manifest 损坏、快照不匹配或 plist 形状异常时拒绝执行并退出 1。
-   幂等；不读写 token / config / audit；in-flight 事务快照只会被提示存在，绝不读取或删除。
-
-   **如实说明的限制**：助手恢复的是设备上的运行时，dpkg 仍记录**更新的**包版本，因此安装更旧的
-   `.deb` 不是推荐路径（旧包的白名单不认识新哈希，会在改动前拒绝）。正规做法是用助手回到旧运行时，
-   然后重装当前或更新的正式包——等价于一次正常的原地升级，token／配置／审计都不会丢。
-
-## 版本与兼容
-
-- 包版本 `0.3.12-1+experimental`；移动端 bridge `0.3.10`；MCP API `3`；工具 26 个。
-- 支持从 0.3.3-1、0.3.5-1、0.3.6、0.3.7、0.3.8 原地升级（白名单内置），token 完整保留。
-- 更旧的版本（如 0.3.2 系列）仍需先卸载再安装。
-- 安装后完整重启并重新越狱的自动恢复已真机验证（jbroot 变化后服务自动恢复）。
-
-## 测试
-
-最近一次完整测试见 `TEST_REPORT_0391.txt`：233 项全部通过（含真实子进程、信号与端口验证，
-以及 `test_upgrade.py` 的 56 项原地升级用例）。可复现构建（连续两次构建字节一致）通过。
+旧版说明保留在 [docs/legacy-0.3.12.md](docs/legacy-0.3.12.md)。
