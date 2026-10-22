@@ -8,6 +8,7 @@
  *   frida ps
  *   frida run -p PID -l script.js
  *   frida run -n ProcessName -l script.js
+ *   frida run -n ProcessName -e 'console.log("hi")'
  */
 #include "frida-core.h"
 
@@ -135,7 +136,8 @@ find_pid (FridaDevice *device, const gchar *name)
 
 static int
 cmd_run (FridaDeviceManager *manager, const gchar *address,
-         guint pid, const gchar *process_name, const gchar *script_path)
+         guint pid, const gchar *process_name, const gchar *script_path,
+         const gchar *inline_script)
 {
   GError *error = NULL;
   FridaDevice *device = open_device (manager, address);
@@ -153,7 +155,11 @@ cmd_run (FridaDeviceManager *manager, const gchar *address,
 
   gchar *source = NULL;
   gsize source_len = 0;
-  if (!g_file_get_contents (script_path, &source, &source_len, &error))
+  if (inline_script != NULL)
+    {
+      source = g_strdup (inline_script);
+    }
+  else if (!g_file_get_contents (script_path, &source, &source_len, &error))
     {
       g_printerr ("cannot read %s: %s\n", script_path,
                   error != NULL ? error->message : "unknown error");
@@ -234,8 +240,8 @@ cmd_run (FridaDeviceManager *manager, const gchar *address,
 static void
 usage (const char *argv0)
 {
-  g_printerr ("usage:\n  %s ps\n  %s run -p PID -l script.js\n  %s run -n NAME -l script.js\n",
-              argv0, argv0, argv0);
+  g_printerr ("usage:\n  %s ps\n  %s run -p PID -l script.js\n  %s run -n NAME -l script.js\n  %s run -n NAME -e 'code'\n",
+              argv0, argv0, argv0, argv0);
 }
 
 int
@@ -251,6 +257,7 @@ main (int argc, char *argv[])
   guint pid = 0;
   gchar *name = NULL;
   gchar *script = NULL;
+  gchar *inline_script = NULL;
   gchar *command = g_strdup (argv[1]);
 
   for (int i = 2; i < argc; i++)
@@ -266,6 +273,8 @@ main (int argc, char *argv[])
         name = g_strdup (argv[++i]);
       else if (g_strcmp0 (argv[i], "-l") == 0 && i + 1 < argc)
         script = g_strdup (argv[++i]);
+      else if (g_strcmp0 (argv[i], "-e") == 0 && i + 1 < argc)
+        inline_script = g_strdup (argv[++i]);
       else
         {
           usage (argv[0]);
@@ -280,8 +289,8 @@ main (int argc, char *argv[])
 
   if (g_strcmp0 (command, "ps") == 0)
     rc = cmd_ps (manager, address);
-  else if (g_strcmp0 (command, "run") == 0 && script != NULL)
-    rc = cmd_run (manager, address, pid, name, script);
+  else if (g_strcmp0 (command, "run") == 0 && (script != NULL || inline_script != NULL))
+    rc = cmd_run (manager, address, pid, name, script, inline_script);
   else
     usage (argv[0]);
 
@@ -292,5 +301,6 @@ main (int argc, char *argv[])
   g_free (address);
   g_free (name);
   g_free (script);
+  g_free (inline_script);
   return rc;
 }
